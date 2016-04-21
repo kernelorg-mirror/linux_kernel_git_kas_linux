@@ -317,6 +317,37 @@ void multiorder_tagged_iteration(void)
 	item_kill_tree(&tree);
 }
 
+static void __multiorder_join(unsigned long index,
+				unsigned order1, unsigned order2)
+{
+	unsigned long loc;
+	void *item, *item2 = item_create(index + 1);
+	RADIX_TREE(tree, GFP_KERNEL);
+
+	item_insert_order(&tree, index, order2);
+	item = radix_tree_lookup(&tree, index);
+	radix_tree_join(&tree, index + 1, order1, item2);
+	loc = radix_tree_locate_item(&tree, item);
+	if (loc == -1)
+		free(item);
+	item = radix_tree_lookup(&tree, index + 1);
+	assert(item == item2);
+	item_kill_tree(&tree);
+}
+
+static void multiorder_join(void)
+{
+	int i, j, idx;
+
+	for (idx = 0; idx < 1024; idx = idx * 2 + 3) {
+		for (i = 1; i < 15; i++) {
+			for (j = 0; j < i; j++) {
+				__multiorder_join(idx, i, j);
+			}
+		}
+	}
+}
+
 void multiorder_checks(void)
 {
 	int i;
@@ -334,4 +365,5 @@ void multiorder_checks(void)
 	multiorder_tag_tests();
 	multiorder_iteration();
 	multiorder_tagged_iteration();
+	multiorder_join();
 }
