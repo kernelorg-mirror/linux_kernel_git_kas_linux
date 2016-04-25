@@ -2,6 +2,8 @@
 #include <linux/types.h>
 #include <linux/radix-tree.h>
 #include <linux/rcupdate.h>
+#include <linux/notifier.h>
+#include <linux/cpu.h>
 
 struct item {
 	unsigned long index;
@@ -43,3 +45,10 @@ void radix_tree_dump(struct radix_tree_root *root);
 int root_tag_get(struct radix_tree_root *root, unsigned int tag);
 unsigned long node_maxindex(struct radix_tree_node *);
 unsigned long shift_maxindex(unsigned int shift);
+int radix_tree_callback(struct notifier_block *nfb,
+			unsigned long action, void *hcpu);
+struct radix_tree_preload {
+	unsigned nr;
+	struct radix_tree_node *nodes;
+};
+extern struct radix_tree_preload radix_tree_preloads;
