@@ -280,8 +280,7 @@ bool __radix_tree_delete_node(struct radix_tree_root *root,
 			      struct radix_tree_node *node);
 void *radix_tree_delete_item(struct radix_tree_root *, unsigned long, void *);
 void *radix_tree_delete(struct radix_tree_root *, unsigned long);
-struct radix_tree_node *radix_tree_replace_clear_tags(
-				struct radix_tree_root *root,
+struct radix_tree_node *radix_tree_replace_clear_tags(struct radix_tree_root *,
 				unsigned long index, void *entry);
 unsigned int radix_tree_gang_lookup(struct radix_tree_root *root,
 			void **results, unsigned long first_index,
@@ -319,8 +318,11 @@ static inline void radix_tree_preload_end(void)
 	preempt_enable();
 }
 
+int radix_tree_split(struct radix_tree_root *, unsigned long index,
+			unsigned new_order);
 int radix_tree_join(struct radix_tree_root *, unsigned long index,
 			unsigned new_order, void *);
+
 /**
  * struct radix_tree_iter - radix tree iterator state
  *
