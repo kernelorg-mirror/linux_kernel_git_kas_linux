@@ -107,6 +107,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		"AnonHugePages:  %8lu kB\n"
 		"ShmemHugePages: %8lu kB\n"
 		"ShmemPmdMapped: %8lu kB\n"
+		"FileHugePages:  %8lu kB\n"
+		"FilePmdMapped:  %8lu kB\n"
 #endif
 #ifdef CONFIG_CMA
 		"CmaTotal:       %8lu kB\n"
@@ -167,6 +169,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		, K(global_node_page_state(NR_ANON_THPS) * HPAGE_PMD_NR)
 		, K(global_node_page_state(NR_SHMEM_THPS) * HPAGE_PMD_NR)
 		, K(global_node_page_state(NR_SHMEM_PMDMAPPED) * HPAGE_PMD_NR)
+		, K(global_node_page_state(NR_FILE_THPS) * HPAGE_PMD_NR)
+		, K(global_node_page_state(NR_FILE_PMDMAPPED) * HPAGE_PMD_NR)
 #endif
 #ifdef CONFIG_CMA
 		, K(totalcma_pages)
