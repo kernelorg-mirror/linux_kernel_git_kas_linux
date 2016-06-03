@@ -1805,17 +1805,23 @@ void *radix_tree_delete(struct radix_tree_root *root, unsigned long index)
 }
 EXPORT_SYMBOL(radix_tree_delete);
 
+/*
+ * If the caller passes NULL for @entry, it must take care to adjust
+ * node->count.  See page_cache_tree_delete() for an example.
+ */
 struct radix_tree_node *radix_tree_replace_clear_tags(
 			struct radix_tree_root *root,
 			unsigned long index, void *entry)
 {
 	struct radix_tree_node *node;
 	void **slot;
+	unsigned int offset;
 
 	__radix_tree_lookup(root, index, &node, &slot);
 
 	if (node) {
-		unsigned int tag, offset = get_slot_offset(node, slot);
+		unsigned int tag;
+		offset = get_slot_offset(node, slot);
 		for (tag = 0; tag < RADIX_TREE_MAX_TAGS; tag++)
 			node_tag_clear(root, node, tag, offset);
 	} else {
@@ -1824,6 +1830,9 @@ struct radix_tree_node *radix_tree_replace_clear_tags(
 	}
 
 	radix_tree_replace_slot(slot, entry);
+	if (!entry && node)
+		delete_sibling_entries(node, node_to_entry(slot), offset);
+
 	return node;
 }
 
