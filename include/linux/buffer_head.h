@@ -131,13 +131,14 @@ BUFFER_FNS(Meta, meta)
 BUFFER_FNS(Prio, prio)
 BUFFER_FNS(Defer_Completion, defer_completion)
 
-#define bh_offset(bh)		((unsigned long)(bh)->b_data & ~PAGE_MASK)
+#define bh_offset(bh)	((unsigned long)(bh)->b_data & ~hpage_mask(bh->b_page))
 
 /* If we *know* page->private refers to buffer_heads */
-#define page_buffers(page)					\
+#define page_buffers(__page)					\
 	({							\
-		BUG_ON(!PagePrivate(page));			\
-		((struct buffer_head *)page_private(page));	\
+		struct page *p = compound_head(__page);		\
+		BUG_ON(!PagePrivate(p));			\
+		((struct buffer_head *)page_private(p));	\
 	})
 #define page_has_buffers(page)	PagePrivate(page)
 
