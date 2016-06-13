@@ -746,7 +746,7 @@ static inline void ClearPageSlabPfmemalloc(struct page *page)
  */
 static inline int page_has_private(struct page *page)
 {
-	return !!(page->flags & PAGE_FLAGS_PRIVATE);
+	return !!(compound_head(page)->flags & PAGE_FLAGS_PRIVATE);
 }
 
 #undef PF_ANY

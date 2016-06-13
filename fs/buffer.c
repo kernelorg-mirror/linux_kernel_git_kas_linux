@@ -871,7 +871,7 @@ struct buffer_head *alloc_page_buffers(struct page *page, unsigned long size,
 
 try_again:
 	head = NULL;
-	offset = PAGE_SIZE;
+	offset = hpage_size(page);
 	while ((offset -= size) >= 0) {
 		bh = alloc_buffer_head(GFP_NOFS);
 		if (!bh)
@@ -1466,7 +1466,7 @@ void set_bh_page(struct buffer_head *bh,
 		struct page *page, unsigned long offset)
 {
 	bh->b_page = page;
-	BUG_ON(offset >= PAGE_SIZE);
+	BUG_ON(offset >= hpage_size(page));
 	if (PageHighMem(page))
 		/*
 		 * This catches illegal uses and preserves the offset:
@@ -2280,11 +2280,13 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 {
 	struct inode *inode = page->mapping->host;
 	sector_t iblock, lblock;
-	struct buffer_head *bh, *head, *arr[MAX_BUF_PER_PAGE];
+	struct buffer_head *arr_on_stack[MAX_BUF_PER_PAGE];
+	struct buffer_head *bh, *head, **arr = arr_on_stack;
 	unsigned int blocksize, bbits;
 	int nr, i;
 	int fully_mapped = 1;
 
+	VM_BUG_ON_PAGE(PageTail(page), page);
 	head = create_page_buffers(page, inode, 0);
 	blocksize = head->b_size;
 	bbits = block_size_bits(blocksize);
@@ -2294,6 +2296,11 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 	bh = head;
 	nr = 0;
 	i = 0;
+
+	if (PageTransHuge(page)) {
+		arr = kmalloc(sizeof(struct buffer_head *) * HPAGE_PMD_NR *
+				MAX_BUF_PER_PAGE, GFP_NOFS);
+	}
 
 	do {
 		if (buffer_uptodate(bh))
@@ -2310,7 +2317,9 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 					SetPageError(page);
 			}
 			if (!buffer_mapped(bh)) {
-				zero_user(page, i * blocksize, blocksize);
+				zero_user(page + (i * blocksize / PAGE_SIZE),
+						i * blocksize % PAGE_SIZE,
+						blocksize);
 				if (!err)
 					set_buffer_uptodate(bh);
 				continue;
@@ -2336,7 +2345,7 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 		if (!PageError(page))
 			SetPageUptodate(page);
 		unlock_page(page);
-		return 0;
+		goto out;
 	}
 
 	/* Stage two: lock the buffers */
@@ -2358,6 +2367,9 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 		else
 			submit_bh(REQ_OP_READ, 0, bh);
 	}
+out:
+	if (arr != arr_on_stack)
+		kfree(arr);
 	return 0;
 }
 EXPORT_SYMBOL(block_read_full_page);
