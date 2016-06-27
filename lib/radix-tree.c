@@ -1741,6 +1741,12 @@ static inline void delete_sibling_entries(struct radix_tree_node *node,
 #endif
 }
 
+void radix_tree_clear_siblings(struct radix_tree_node *node, void **slot)
+{
+	delete_sibling_entries(node, node_to_entry(slot),
+			get_slot_offset(node, slot));
+}
+
 /**
  *	radix_tree_delete_item    -    delete an item from a radix tree
  *	@root:		radix tree root

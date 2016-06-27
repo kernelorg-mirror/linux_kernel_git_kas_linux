@@ -283,6 +283,7 @@ void *radix_tree_delete(struct radix_tree_root *, unsigned long);
 void radix_tree_clear_tags(struct radix_tree_root *root,
 			   struct radix_tree_node *node,
 			   void **slot);
+void radix_tree_clear_siblings(struct radix_tree_node *node, void **slot);
 unsigned int radix_tree_gang_lookup(struct radix_tree_root *root,
 			void **results, unsigned long first_index,
 			unsigned int max_items);
