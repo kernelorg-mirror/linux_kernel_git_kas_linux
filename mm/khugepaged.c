@@ -1348,10 +1348,8 @@ static void collapse_shmem(struct mm_struct *mm,
 			break;
 		}
 		nr_none += n;
-		for (; index < min(iter.index, end); index++) {
-			radix_tree_insert(&mapping->page_tree, index,
-					new_page + (index % HPAGE_PMD_NR));
-		}
+		for (; index < min(iter.index, end); index++)
+			radix_tree_insert(&mapping->page_tree, index, new_page);
 
 		/* We are done. */
 		if (index >= end)
@@ -1420,8 +1418,7 @@ static void collapse_shmem(struct mm_struct *mm,
 		list_add_tail(&page->lru, &pagelist);
 
 		/* Finally, replace with the new page. */
-		radix_tree_replace_slot(slot,
-				new_page + (index % HPAGE_PMD_NR));
+		radix_tree_replace_slot(slot, new_page);
 
 		index++;
 		continue;
@@ -1438,24 +1435,17 @@ out_unlock:
 		break;
 	}
 
-	/*
-	 * Handle hole in radix tree at the end of the range.
-	 * This code only triggers if there's nothing in radix tree
-	 * beyond 'end'.
-	 */
-	if (result == SCAN_SUCCEED && index < end) {
+	if (result == SCAN_SUCCEED) {
 		int n = end - index;
 
-		if (!shmem_charge(mapping->host, n)) {
+		if (n && !shmem_charge(mapping->host, n)) {
 			result = SCAN_FAIL;
 			goto tree_locked;
 		}
-
-		for (; index < end; index++) {
-			radix_tree_insert(&mapping->page_tree, index,
-					new_page + (index % HPAGE_PMD_NR));
-		}
 		nr_none += n;
+
+		radix_tree_join(&mapping->page_tree, start,
+				HPAGE_PMD_ORDER, new_page);
 	}
 
 tree_locked:
