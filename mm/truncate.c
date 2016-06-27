@@ -524,16 +524,13 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 
 			WARN_ON(page_to_index(page) != index);
 
-			/* Middle of THP: skip */
-			if (PageTransTail(page)) {
+			/* Is 'start' or 'end' in the middle of THP ? */
+			if (PageTransHuge(page) &&
+				(start > index ||
+				 (index ==  round_down(end, HPAGE_PMD_NR)))) {
+				/* skip */
 				unlock_page(page);
 				continue;
-			} else if (PageTransHuge(page)) {
-				index += HPAGE_PMD_NR - 1;
-				i += HPAGE_PMD_NR - 1;
-				/* 'end' is in the middle of THP */
-				if (index ==  round_down(end, HPAGE_PMD_NR))
-					continue;
 			}
 
 			ret = invalidate_inode_page(page);
@@ -547,9 +544,9 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 			count += ret;
 		}
 		pagevec_remove_exceptionals(&pvec);
+		index += pvec.nr ? hpage_nr_pages(pvec.pages[pvec.nr - 1]) : 1;
 		pagevec_release(&pvec);
 		cond_resched();
-		index++;
 	}
 	return count;
 }

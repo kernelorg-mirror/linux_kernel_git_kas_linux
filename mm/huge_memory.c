@@ -1928,6 +1928,7 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	struct page *head = compound_head(page);
 	struct zone *zone = page_zone(head);
 	struct lruvec *lruvec;
+	struct page *subpage;
 	pgoff_t end = -1;
 	int i;
 
@@ -1936,8 +1937,27 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	/* complete memcg works before add pages to LRU */
 	mem_cgroup_split_huge_fixup(head);
 
-	if (!PageAnon(page))
-		end = DIV_ROUND_UP(i_size_read(head->mapping->host), PAGE_SIZE);
+	if (!PageAnon(head)) {
+		struct address_space *mapping = head->mapping;
+		struct radix_tree_iter iter;
+		void **slot;
+
+		__dec_node_page_state(head, NR_SHMEM_THPS);
+
+		radix_tree_split(&mapping->page_tree, head->index, 0);
+		radix_tree_for_each_slot(slot, &mapping->page_tree, &iter,
+				head->index) {
+			if (iter.index >= head->index + HPAGE_PMD_NR)
+				break;
+			subpage = head + iter.index - head->index;
+			radix_tree_replace_slot(&mapping->page_tree,
+					slot, subpage);
+			VM_BUG_ON_PAGE(compound_head(subpage) != head, subpage);
+		}
+		radix_tree_preload_end();
+
+		end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE);
+	}
 
 	for (i = HPAGE_PMD_NR - 1; i >= 1; i--) {
 		__split_huge_page_tail(head, i, lruvec, list);
@@ -1966,7 +1986,7 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	unfreeze_page(head);
 
 	for (i = 0; i < HPAGE_PMD_NR; i++) {
-		struct page *subpage = head + i;
+		subpage = head + i;
 		if (subpage == page)
 			continue;
 		unlock_page(subpage);
@@ -2123,8 +2143,8 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			goto out;
 		}
 
-		/* Addidional pins from radix tree */
-		extra_pins = HPAGE_PMD_NR;
+		/* Addidional pin from radix tree */
+		extra_pins = 1;
 		anon_vma = NULL;
 		i_mmap_lock_read(mapping);
 	}
@@ -2146,6 +2166,12 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 	if (mlocked)
 		lru_add_drain();
 
+	if (mapping && radix_tree_split_preload(HPAGE_PMD_ORDER, 0,
+				GFP_KERNEL)) {
+		ret = -ENOMEM;
+		goto unfreeze;
+	}
+
 	/* prevent PageLRU to go away from under us, and freeze lru stats */
 	spin_lock_irqsave(zone_lru_lock(page_zone(head)), flags);
 
@@ -2155,10 +2181,7 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 		spin_lock(&mapping->tree_lock);
 		pslot = radix_tree_lookup_slot(&mapping->page_tree,
 				page_index(head));
-		/*
-		 * Check if the head page is present in radix tree.
-		 * We assume all tail are present too, if head is there.
-		 */
+		/* Check if the page is present in radix tree */
 		if (radix_tree_deref_slot_protected(pslot,
 					&mapping->tree_lock) != head)
 			goto fail;
@@ -2173,8 +2196,6 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			pgdata->split_queue_len--;
 			list_del(page_deferred_list(head));
 		}
-		if (mapping)
-			__dec_node_page_state(page, NR_SHMEM_THPS);
 		spin_unlock(&pgdata->split_queue_lock);
 		__split_huge_page(page, list, flags);
 		ret = 0;
@@ -2188,9 +2209,12 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			BUG();
 		}
 		spin_unlock(&pgdata->split_queue_lock);
-fail:		if (mapping)
+fail:		if (mapping) {
 			spin_unlock(&mapping->tree_lock);
+			radix_tree_preload_end();
+		}
 		spin_unlock_irqrestore(zone_lru_lock(page_zone(head)), flags);
+unfreeze:
 		unfreeze_page(head);
 		ret = -EBUSY;
 	}

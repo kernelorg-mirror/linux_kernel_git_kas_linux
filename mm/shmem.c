@@ -544,33 +544,14 @@ static int shmem_add_to_page_cache(struct page *page,
 	VM_BUG_ON_PAGE(!PageSwapBacked(page), page);
 	VM_BUG_ON(expected && PageTransHuge(page));
 
-	page_ref_add(page, nr);
+	get_page(page);
 	page->mapping = mapping;
 	page->index = index;
 
 	spin_lock_irq(&mapping->tree_lock);
-	if (PageTransHuge(page)) {
-		void __rcu **results;
-		pgoff_t idx;
-		int i;
-
-		error = 0;
-		if (radix_tree_gang_lookup_slot(&mapping->page_tree,
-					&results, &idx, index, 1) &&
-				idx < index + HPAGE_PMD_NR) {
-			error = -EEXIST;
-		}
-
-		if (!error) {
-			for (i = 0; i < HPAGE_PMD_NR; i++) {
-				error = radix_tree_insert(&mapping->page_tree,
-						index + i, page + i);
-				VM_BUG_ON(error);
-			}
-			count_vm_event(THP_FILE_ALLOC);
-		}
-	} else if (!expected) {
-		error = radix_tree_insert(&mapping->page_tree, index, page);
+	if (!expected) {
+		error = __radix_tree_insert(&mapping->page_tree, index,
+				compound_order(page), page);
 	} else {
 		error = shmem_radix_tree_replace(mapping, index, expected,
 								 page);
@@ -578,15 +559,17 @@ static int shmem_add_to_page_cache(struct page *page,
 
 	if (!error) {
 		mapping->nrpages += nr;
-		if (PageTransHuge(page))
+		if (PageTransHuge(page)) {
+			count_vm_event(THP_FILE_ALLOC);
 			__inc_node_page_state(page, NR_SHMEM_THPS);
+		}
 		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, nr);
 		__mod_node_page_state(page_pgdat(page), NR_SHMEM, nr);
 		spin_unlock_irq(&mapping->tree_lock);
 	} else {
 		page->mapping = NULL;
 		spin_unlock_irq(&mapping->tree_lock);
-		page_ref_sub(page, nr);
+		put_page(page);
 	}
 	return error;
 }
@@ -727,8 +710,9 @@ void shmem_unlock_mapping(struct address_space *mapping)
 					   PAGEVEC_SIZE, pvec.pages, indices);
 		if (!pvec.nr)
 			break;
-		index = indices[pvec.nr - 1] + 1;
 		pagevec_remove_exceptionals(&pvec);
+		index = indices[pvec.nr - 1] +
+			hpage_nr_pages(pvec.pages[pvec.nr - 1]);
 		check_move_unevictable_pages(pvec.pages, pvec.nr);
 		pagevec_release(&pvec);
 		cond_resched();
@@ -785,23 +769,25 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 			if (!trylock_page(page))
 				continue;
 
-			if (PageTransTail(page)) {
-				/* Middle of THP: zero out the page */
-				clear_highpage(page);
-				unlock_page(page);
-				continue;
-			} else if (PageTransHuge(page)) {
+			if (PageTransHuge(page)) {
+				/* Range starts in the middle of THP */
+				if (start > page->index) {
+					pgoff_t i;
+					index += HPAGE_PMD_NR;
+					page += start - page->index;
+					for (i = start; i < index; i++, page++)
+						clear_highpage(page);
+					unlock_page(page - 1);
+					continue;
+				}
+
+				/* Range ends in the middle of THP */
 				if (index == round_down(end, HPAGE_PMD_NR)) {
-					/*
-					 * Range ends in the middle of THP:
-					 * zero out the page
-					 */
-					clear_highpage(page);
+					while (index++ < end)
+						clear_highpage(page++);
 					unlock_page(page);
 					continue;
 				}
-				index += HPAGE_PMD_NR - 1;
-				i += HPAGE_PMD_NR - 1;
 			}
 
 			if (!unfalloc || !PageUptodate(page)) {
@@ -814,9 +800,9 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 			unlock_page(page);
 		}
 		pagevec_remove_exceptionals(&pvec);
+		index += pvec.nr ? hpage_nr_pages(pvec.pages[pvec.nr - 1]) : 1;
 		pagevec_release(&pvec);
 		cond_resched();
-		index++;
 	}
 
 	if (partial_start) {
@@ -874,8 +860,7 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 					continue;
 				if (shmem_free_swap(mapping, index, page)) {
 					/* Swap was replaced by page: retry */
-					index--;
-					break;
+					goto retry;
 				}
 				nr_swaps_freed++;
 				continue;
@@ -883,30 +868,24 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 
 			lock_page(page);
 
-			if (PageTransTail(page)) {
-				/* Middle of THP: zero out the page */
-				clear_highpage(page);
-				unlock_page(page);
-				/*
-				 * Partial thp truncate due 'start' in middle
-				 * of THP: don't need to look on these pages
-				 * again on !pvec.nr restart.
-				 */
-				if (index != round_down(end, HPAGE_PMD_NR))
-					start++;
-				continue;
-			} else if (PageTransHuge(page)) {
+			if (PageTransHuge(page)) {
+				/* Range starts in the middle of THP */
+				if (start > page->index) {
+					index += HPAGE_PMD_NR;
+					page += start - page->index;
+					while (start++ < index)
+						clear_highpage(page++);
+					unlock_page(page - 1);
+					continue;
+				}
+
+				/* Range ends in the middle of THP */
 				if (index == round_down(end, HPAGE_PMD_NR)) {
-					/*
-					 * Range ends in the middle of THP:
-					 * zero out the page
-					 */
-					clear_highpage(page);
+					while (index++ < end)
+						clear_highpage(page++);
 					unlock_page(page);
 					continue;
 				}
-				index += HPAGE_PMD_NR - 1;
-				i += HPAGE_PMD_NR - 1;
 			}
 
 			if (!unfalloc || !PageUptodate(page)) {
@@ -917,15 +896,18 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 				} else {
 					/* Page was replaced by swap: retry */
 					unlock_page(page);
-					index--;
-					break;
+					goto retry;
 				}
 			}
 			unlock_page(page);
 		}
 		pagevec_remove_exceptionals(&pvec);
+		index += pvec.nr ? hpage_nr_pages(pvec.pages[pvec.nr - 1]) : 1;
 		pagevec_release(&pvec);
-		index++;
+		continue;
+retry:
+		pagevec_remove_exceptionals(&pvec);
+		pagevec_release(&pvec);
 	}
 
 	spin_lock_irq(&info->lock);
@@ -1762,8 +1744,7 @@ alloc_nohuge:		page = shmem_alloc_and_acct_page(gfp, info, sbinfo,
 				PageTransHuge(page));
 		if (error)
 			goto unacct;
-		error = radix_tree_maybe_preload_order(gfp & GFP_RECLAIM_MASK,
-				compound_order(page));
+		error = radix_tree_maybe_preload(gfp & GFP_RECLAIM_MASK);
 		if (!error) {
 			error = shmem_add_to_page_cache(page, mapping, hindex,
 							NULL);
@@ -1837,7 +1818,7 @@ clear:
 		error = -EINVAL;
 		goto unlock;
 	}
-	*pagep = page + index - hindex;
+	*pagep = find_subpage(page, index);
 	return 0;
 
 	/*
