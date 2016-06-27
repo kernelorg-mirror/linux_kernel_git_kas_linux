@@ -540,33 +540,14 @@ static int shmem_add_to_page_cache(struct page *page,
 	VM_BUG_ON_PAGE(!PageSwapBacked(page), page);
 	VM_BUG_ON(expected && PageTransHuge(page));
 
-	page_ref_add(page, nr);
+	get_page(page);
 	page->mapping = mapping;
 	page->index = index;
 
 	spin_lock_irq(&mapping->tree_lock);
-	if (PageTransHuge(page)) {
-		void __rcu **results;
-		pgoff_t idx;
-		int i;
-
-		error = 0;
-		if (radix_tree_gang_lookup_slot(&mapping->page_tree,
-					&results, &idx, index, 1) &&
-				idx < index + HPAGE_PMD_NR) {
-			error = -EEXIST;
-		}
-
-		if (!error) {
-			for (i = 0; i < HPAGE_PMD_NR; i++) {
-				error = radix_tree_insert(&mapping->page_tree,
-						index + i, page + i);
-				VM_BUG_ON(error);
-			}
-			count_vm_event(THP_FILE_ALLOC);
-		}
-	} else if (!expected) {
-		error = radix_tree_insert(&mapping->page_tree, index, page);
+	if (!expected) {
+		error = __radix_tree_insert(&mapping->page_tree, index,
+				compound_order(page), page);
 	} else {
 		error = shmem_radix_tree_replace(mapping, index, expected,
 								 page);
@@ -574,15 +555,17 @@ static int shmem_add_to_page_cache(struct page *page,
 
 	if (!error) {
 		mapping->nrpages += nr;
-		if (PageTransHuge(page))
+		if (PageTransHuge(page)) {
+			count_vm_event(THP_FILE_ALLOC);
 			__inc_node_page_state(page, NR_SHMEM_THPS);
+		}
 		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, nr);
 		__mod_node_page_state(page_pgdat(page), NR_SHMEM, nr);
 		spin_unlock_irq(&mapping->tree_lock);
 	} else {
 		page->mapping = NULL;
 		spin_unlock_irq(&mapping->tree_lock);
-		page_ref_sub(page, nr);
+		put_page(page);
 	}
 	return error;
 }
@@ -1734,8 +1717,7 @@ alloc_nohuge:		page = shmem_alloc_and_acct_page(gfp, info, sbinfo,
 				PageTransHuge(page));
 		if (error)
 			goto unacct;
-		error = radix_tree_maybe_preload_order(gfp & GFP_RECLAIM_MASK,
-				compound_order(page));
+		error = radix_tree_maybe_preload(gfp & GFP_RECLAIM_MASK);
 		if (!error) {
 			error = shmem_add_to_page_cache(page, mapping, hindex,
 							NULL);
