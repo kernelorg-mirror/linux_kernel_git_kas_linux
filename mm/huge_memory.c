@@ -30,6 +30,7 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/page_idle.h>
 #include <linux/shmem_fs.h>
+#include <linux/buffer_head.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
@@ -2055,7 +2056,6 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 
 	VM_BUG_ON_PAGE(is_huge_zero_page(page), page);
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
-	VM_BUG_ON_PAGE(!PageSwapBacked(page), page);
 	VM_BUG_ON_PAGE(!PageCompound(page), page);
 
 	if (PageAnon(head)) {
@@ -2082,6 +2082,23 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 		if (!mapping) {
 			ret = -EBUSY;
 			goto out;
+		}
+
+		/* Try to free buffers before attempt split */
+		if (!PageSwapBacked(head) && PagePrivate(page)) {
+			/*
+			 * We cannot trigger writeback from here due possible
+			 * recursion if triggered from vmscan, only wait.
+			 *
+			 * Caller can trigger writeback it on its own, if safe.
+			 */
+			wait_on_page_writeback(head);
+
+			if (page_has_buffers(head) &&
+					!try_to_free_buffers(head)) {
+				ret = -EBUSY;
+				goto out;
+			}
 		}
 
 		/* Addidional pin from radix tree */

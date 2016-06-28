@@ -395,6 +395,7 @@ extern int __set_page_dirty_buffers(struct page *page);
 #else /* CONFIG_BLOCK */
 
 static inline void buffer_init(void) {}
+static inline int page_has_buffers(struct page *page) { return 0; }
 static inline int try_to_free_buffers(struct page *page) { return 1; }
 static inline int inode_has_buffers(struct inode *inode) { return 0; }
 static inline void invalidate_inode_buffers(struct inode *inode) {}
