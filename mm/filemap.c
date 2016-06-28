@@ -636,14 +636,14 @@ static int __add_to_page_cache_locked(struct page *page,
 				      pgoff_t offset, gfp_t gfp_mask,
 				      void **shadowp)
 {
-	int huge = PageHuge(page);
+	int hugetlb = PageHuge(page);
 	struct mem_cgroup *memcg;
 	int error;
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(PageSwapBacked(page), page);
 
-	if (!huge) {
+	if (!hugetlb) {
 		error = mem_cgroup_try_charge(page, current->mm,
 					      gfp_mask, &memcg, false);
 		if (error)
@@ -652,7 +652,7 @@ static int __add_to_page_cache_locked(struct page *page,
 
 	error = radix_tree_maybe_preload(gfp_mask & ~__GFP_HIGHMEM);
 	if (error) {
-		if (!huge)
+		if (!hugetlb)
 			mem_cgroup_cancel_charge(page, memcg, false);
 		return error;
 	}
@@ -662,16 +662,30 @@ static int __add_to_page_cache_locked(struct page *page,
 	page->index = offset;
 
 	spin_lock_irq(&mapping->tree_lock);
-	error = page_cache_tree_insert(mapping, page, shadowp);
+	if (PageTransHuge(page)) {
+		/* TODO: shadow handling */
+		error = __radix_tree_insert(&mapping->page_tree, offset,
+				compound_order(page), page);
+
+		if (!error) {
+			count_vm_event(THP_FILE_ALLOC);
+			mapping->nrpages += HPAGE_PMD_NR;
+			*shadowp = NULL;
+			__inc_node_page_state(page, NR_FILE_THPS);
+		}
+	} else {
+		error = page_cache_tree_insert(mapping, page, shadowp);
+	}
 	radix_tree_preload_end();
 	if (unlikely(error))
 		goto err_insert;
 
 	/* hugetlb pages do not participate in page cache accounting. */
-	if (!huge)
-		__inc_node_page_state(page, NR_FILE_PAGES);
+	if (!hugetlb)
+		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES,
+				hpage_nr_pages(page));
 	spin_unlock_irq(&mapping->tree_lock);
-	if (!huge)
+	if (!hugetlb)
 		mem_cgroup_commit_charge(page, memcg, false, false);
 	trace_mm_filemap_add_to_page_cache(page);
 	return 0;
@@ -679,7 +693,7 @@ err_insert:
 	page->mapping = NULL;
 	/* Leave page->index set: truncation relies upon it */
 	spin_unlock_irq(&mapping->tree_lock);
-	if (!huge)
+	if (!hugetlb)
 		mem_cgroup_cancel_charge(page, memcg, false);
 	put_page(page);
 	return error;
@@ -736,7 +750,7 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 EXPORT_SYMBOL_GPL(add_to_page_cache_lru);
 
 #ifdef CONFIG_NUMA
-struct page *__page_cache_alloc(gfp_t gfp)
+struct page *__page_cache_alloc_order(gfp_t gfp, unsigned int order)
 {
 	int n;
 	struct page *page;
@@ -746,14 +760,14 @@ struct page *__page_cache_alloc(gfp_t gfp)
 		do {
 			cpuset_mems_cookie = read_mems_allowed_begin();
 			n = cpuset_mem_spread_node();
-			page = __alloc_pages_node(n, gfp, 0);
+			page = __alloc_pages_node(n, gfp, order);
 		} while (!page && read_mems_allowed_retry(cpuset_mems_cookie));
 
 		return page;
 	}
-	return alloc_pages(gfp, 0);
+	return alloc_pages(gfp, order);
 }
-EXPORT_SYMBOL(__page_cache_alloc);
+EXPORT_SYMBOL(__page_cache_alloc_order);
 #endif
 
 /*
@@ -1147,6 +1161,59 @@ repeat:
 	return page;
 }
 EXPORT_SYMBOL(find_lock_entry);
+
+bool __page_cache_allow_huge(struct address_space *mapping, pgoff_t offset)
+{
+	struct inode *inode = mapping->host;
+	void __rcu **results;
+	unsigned long idx;
+
+	offset = round_down(offset, HPAGE_PMD_NR);
+
+	switch (inode->i_flags & S_HUGE_MODE) {
+	case S_HUGE_NEVER:
+		return false;
+	case S_HUGE_ALWAYS:
+		break;
+	case S_HUGE_WITHIN_SIZE:
+		if (DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE) <
+				offset + HPAGE_PMD_NR)
+			return false;
+		break;
+	case S_HUGE_ADVISE:
+		/* TODO */
+		return false;
+	default:
+		WARN_ON_ONCE(1);
+		return false;
+	}
+
+	rcu_read_lock();
+	if (radix_tree_gang_lookup_slot(&mapping->page_tree, &results, &idx,
+				offset, 1) && idx < offset + HPAGE_PMD_NR) {
+		rcu_read_unlock();
+		return false;
+	}
+	rcu_read_unlock();
+
+	return true;
+
+}
+
+static struct page *page_cache_alloc_huge(struct address_space *mapping,
+		pgoff_t offset, gfp_t gfp_mask)
+{
+	struct page *page;
+
+	if (!page_cache_allow_huge(mapping, offset))
+		return NULL;
+
+	gfp_mask |= __GFP_COMP | __GFP_NORETRY | __GFP_NOWARN;
+	page = __page_cache_alloc_order(gfp_mask, HPAGE_PMD_ORDER);
+	if (page)
+		prep_transhuge_page(page);
+	return page;
+}
 
 /**
  * pagecache_get_page - find and get a page reference
@@ -2016,18 +2083,36 @@ static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
 {
 	struct address_space *mapping = file->f_mapping;
 	struct page *page;
+	pgoff_t hoffset;
 	int ret;
 
 	do {
-		page = __page_cache_alloc(gfp_mask|__GFP_COLD);
+		page = page_cache_alloc_huge(mapping, offset, gfp_mask);
+no_huge:
+		if (!page)
+			page = __page_cache_alloc(gfp_mask|__GFP_COLD);
 		if (!page)
 			return -ENOMEM;
 
-		ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
+		if (PageTransHuge(page))
+			hoffset = round_down(offset, HPAGE_PMD_NR);
+		else
+			hoffset = offset;
+
+		ret = add_to_page_cache_lru(page, mapping, hoffset,
+				gfp_mask & GFP_KERNEL);
 		if (ret == 0)
 			ret = mapping->a_ops->readpage(file, page);
 		else if (ret == -EEXIST)
 			ret = 0; /* losing race to add is OK */
+
+		if (ret && PageTransHuge(page)) {
+			delete_from_page_cache(page);
+			unlock_page(page);
+			put_page(page);
+			page = NULL;
+			goto no_huge;
+		}
 
 		put_page(page);
 
