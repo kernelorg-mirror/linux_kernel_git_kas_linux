@@ -1806,6 +1806,11 @@ struct super_operations {
 #else
 #define S_DAX		0	/* Make all the DAX code disappear */
 #endif
+#define S_HUGE_MODE		0xc000
+#define S_HUGE_NEVER		0x0000
+#define S_HUGE_ALWAYS		0x4000
+#define S_HUGE_WITHIN_SIZE	0x8000
+#define S_HUGE_ADVISE		0xc000
 
 /*
  * Note that nosuid etc flags are inode-specific: setting some file-system

@@ -201,13 +201,19 @@ static inline int page_cache_add_speculative(struct page *page, int count)
 }
 
 #ifdef CONFIG_NUMA
-extern struct page *__page_cache_alloc(gfp_t gfp);
+extern struct page *__page_cache_alloc_order(gfp_t gfp, unsigned int order);
 #else
-static inline struct page *__page_cache_alloc(gfp_t gfp)
+static inline struct page *__page_cache_alloc_order(gfp_t gfp,
+		unsigned int order)
 {
-	return alloc_pages(gfp, 0);
+	return alloc_pages(gfp, order);
 }
 #endif
+
+static inline struct page *__page_cache_alloc(gfp_t gfp)
+{
+	return __page_cache_alloc_order(gfp, 0);
+}
 
 static inline struct page *page_cache_alloc(struct address_space *x)
 {
@@ -223,6 +229,15 @@ static inline gfp_t readahead_gfp_mask(struct address_space *x)
 {
 	return mapping_gfp_mask(x) |
 				  __GFP_COLD | __GFP_NORETRY | __GFP_NOWARN;
+}
+
+extern bool __page_cache_allow_huge(struct address_space *x, pgoff_t offset);
+static inline bool page_cache_allow_huge(struct address_space *x,
+		pgoff_t offset)
+{
+	if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+		return false;
+	return __page_cache_allow_huge(x, offset);
 }
 
 typedef int filler_t(void *, struct page *);
