@@ -418,6 +418,16 @@ void **radix_tree_iter_retry(struct radix_tree_iter *iter)
 	return NULL;
 }
 
+static inline __must_check
+struct radix_tree_node *radix_tree_iter_to_node(struct radix_tree_root *root,
+		struct radix_tree_iter *iter, void **slot)
+{
+       if ((void **)&root->rnode == slot)
+               return NULL;
+       slot -= (iter->index >> iter_shift(iter)) & RADIX_TREE_MAP_MASK;
+       return container_of(slot, struct radix_tree_node, slots[0]);
+}
+
 static inline unsigned long
 __radix_tree_iter_add(struct radix_tree_iter *iter, unsigned long slots)
 {

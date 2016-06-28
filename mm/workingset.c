@@ -322,6 +322,29 @@ out:
 	rcu_read_unlock();
 }
 
+void workingset_clear_exceptional_entry(struct address_space *mapping,
+		struct radix_tree_node *node, void **slot)
+{
+	radix_tree_replace_slot(slot, NULL);
+	mapping->nrexceptional--;
+	if (!node)
+		return;
+
+	workingset_node_shadows_dec(node);
+	/*
+	 * Don't track node without shadow entries.
+	 *
+	 * Avoid acquiring the list_lru lock if already untracked.
+	 * The list_empty() test is safe as node->private_list is
+	 * protected by mapping->tree_lock.
+	 */
+	if (!workingset_node_shadows(node) &&
+	    !list_empty(&node->private_list))
+		list_lru_del(&workingset_shadow_nodes,
+				&node->private_list);
+	__radix_tree_delete_node(&mapping->page_tree, node);
+}
+
 /*
  * Shadow entries reflect the share of the working set that does not
  * fit into memory, so their number depends on the access pattern of

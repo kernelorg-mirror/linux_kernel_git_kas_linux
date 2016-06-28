@@ -49,23 +49,7 @@ static void clear_exceptional_entry(struct address_space *mapping,
 		goto unlock;
 	if (*slot != entry)
 		goto unlock;
-	radix_tree_replace_slot(slot, NULL);
-	mapping->nrexceptional--;
-	if (!node)
-		goto unlock;
-	workingset_node_shadows_dec(node);
-	/*
-	 * Don't track node without shadow entries.
-	 *
-	 * Avoid acquiring the list_lru lock if already untracked.
-	 * The list_empty() test is safe as node->private_list is
-	 * protected by mapping->tree_lock.
-	 */
-	if (!workingset_node_shadows(node) &&
-	    !list_empty(&node->private_list))
-		list_lru_del(&workingset_shadow_nodes,
-				&node->private_list);
-	__radix_tree_delete_node(&mapping->page_tree, node);
+	workingset_clear_exceptional_entry(mapping, node, slot);
 unlock:
 	spin_unlock_irq(&mapping->tree_lock);
 }
