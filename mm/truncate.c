@@ -90,7 +90,7 @@ void do_invalidatepage(struct page *page, unsigned int offset,
 {
 	void (*invalidatepage)(struct page *, unsigned int, unsigned int);
 
-	invalidatepage = page->mapping->a_ops->invalidatepage;
+	invalidatepage = page_mapping(page)->a_ops->invalidatepage;
 #ifdef CONFIG_BLOCK
 	if (!invalidatepage)
 		invalidatepage = block_invalidatepage;
@@ -116,7 +116,7 @@ truncate_complete_page(struct address_space *mapping, struct page *page)
 		return -EIO;
 
 	if (page_has_private(page))
-		do_invalidatepage(page, 0, PAGE_SIZE);
+		do_invalidatepage(page, 0, hpage_size(page));
 
 	/*
 	 * Some filesystems seem to re-dirty the page even after
@@ -288,6 +288,36 @@ void truncate_inode_pages_range(struct address_space *mapping,
 				unlock_page(page);
 				continue;
 			}
+
+			if (PageTransTail(page)) {
+				/* Middle of THP: zero out the page */
+				clear_highpage(page);
+				if (page_has_private(page)) {
+					int off = page - compound_head(page);
+					do_invalidatepage(compound_head(page),
+							off * PAGE_SIZE,
+							PAGE_SIZE);
+				}
+				unlock_page(page);
+				continue;
+			} else if (PageTransHuge(page)) {
+				if (index == round_down(end, HPAGE_PMD_NR)) {
+					/*
+					 * Range ends in the middle of THP:
+					 * zero out the page
+					 */
+					clear_highpage(page);
+					if (page_has_private(page)) {
+						do_invalidatepage(page, 0,
+								PAGE_SIZE);
+					}
+					unlock_page(page);
+					continue;
+				}
+				index += HPAGE_PMD_NR - 1;
+				i += HPAGE_PMD_NR - 1;
+			}
+
 			truncate_inode_page(mapping, page);
 			unlock_page(page);
 		}
@@ -309,9 +339,12 @@ void truncate_inode_pages_range(struct address_space *mapping,
 			wait_on_page_writeback(page);
 			zero_user_segment(page, partial_start, top);
 			cleancache_invalidate_page(mapping, page);
-			if (page_has_private(page))
-				do_invalidatepage(page, partial_start,
-						  top - partial_start);
+			if (page_has_private(page)) {
+				int off = page - compound_head(page);
+				do_invalidatepage(compound_head(page),
+						off * PAGE_SIZE + partial_start,
+						top - partial_start);
+			}
 			unlock_page(page);
 			put_page(page);
 		}
@@ -322,9 +355,12 @@ void truncate_inode_pages_range(struct address_space *mapping,
 			wait_on_page_writeback(page);
 			zero_user_segment(page, 0, partial_end);
 			cleancache_invalidate_page(mapping, page);
-			if (page_has_private(page))
-				do_invalidatepage(page, 0,
-						  partial_end);
+			if (page_has_private(page)) {
+				int off = page - compound_head(page);
+				do_invalidatepage(compound_head(page),
+						off * PAGE_SIZE,
+						partial_end);
+			}
 			unlock_page(page);
 			put_page(page);
 		}
@@ -373,6 +409,49 @@ void truncate_inode_pages_range(struct address_space *mapping,
 			lock_page(page);
 			WARN_ON(page_to_pgoff(page) != index);
 			wait_on_page_writeback(page);
+
+			if (PageTransTail(page)) {
+				/* Middle of THP: zero out the page */
+				clear_highpage(page);
+				if (page_has_private(page)) {
+					int off = page - compound_head(page);
+					do_invalidatepage(compound_head(page),
+							off * PAGE_SIZE,
+							PAGE_SIZE);
+				}
+				unlock_page(page);
+				/*
+				 * Partial thp truncate due 'start' in middle
+				 * of THP: don't need to look on these pages
+				 * again on !pvec.nr restart.
+				 */
+				if (index != round_down(end, HPAGE_PMD_NR))
+					start++;
+				continue;
+			} else if (PageTransHuge(page)) {
+				if (index == round_down(end, HPAGE_PMD_NR)) {
+					/*
+					 * Range ends in the middle of THP:
+					 * zero out the page
+					 */
+					clear_highpage(page);
+					if (page_has_private(page)) {
+						do_invalidatepage(page, 0,
+								PAGE_SIZE);
+					}
+					unlock_page(page);
+					/*
+					 * Partial thp truncate due 'end' in
+					 * middle of THP: don't need to look on
+					 * these pages again restart.
+					 */
+					start++;
+					continue;
+				}
+				index += HPAGE_PMD_NR - 1;
+				i += HPAGE_PMD_NR - 1;
+			}
+
 			truncate_inode_page(mapping, page);
 			unlock_page(page);
 		}
