@@ -2052,7 +2052,7 @@ static int do_page_mkwrite(struct vm_area_struct *vma, struct page *page,
 		return ret;
 	if (unlikely(!(ret & VM_FAULT_LOCKED))) {
 		lock_page(page);
-		if (!page->mapping) {
+		if (!page_mapping(page)) {
 			unlock_page(page);
 			return 0; /* retry */
 		}
@@ -2100,7 +2100,7 @@ static inline int wp_page_reuse(struct fault_env *fe, pte_t orig_pte,
 
 		dirtied = set_page_dirty(page);
 		VM_BUG_ON_PAGE(PageAnon(page), page);
-		mapping = page->mapping;
+		mapping = page_mapping(page);
 		unlock_page(page);
 		put_page(page);
 
