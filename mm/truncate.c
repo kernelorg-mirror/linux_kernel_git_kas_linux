@@ -612,6 +612,7 @@ invalidate_complete_page2(struct address_space *mapping, struct page *page)
 {
 	unsigned long flags;
 
+	page = compound_head(page);
 	if (page->mapping != mapping)
 		return 0;
 
@@ -640,7 +641,7 @@ static int do_launder_page(struct address_space *mapping, struct page *page)
 {
 	if (!PageDirty(page))
 		return 0;
-	if (page->mapping != mapping || mapping->a_ops->launder_page == NULL)
+	if (page_mapping(page) != mapping || mapping->a_ops->launder_page == NULL)
 		return 0;
 	return mapping->a_ops->launder_page(page);
 }
@@ -688,7 +689,7 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 
 			lock_page(page);
 			WARN_ON(page_to_pgoff(page) != index);
-			if (page->mapping != mapping) {
+			if (page_mapping(page) != mapping) {
 				unlock_page(page);
 				continue;
 			}
