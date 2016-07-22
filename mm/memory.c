@@ -2049,7 +2049,7 @@ static int do_page_mkwrite(struct vm_fault *vmf)
 		return ret;
 	if (unlikely(!(ret & VM_FAULT_LOCKED))) {
 		lock_page(page);
-		if (!page->mapping) {
+		if (!page_mapping(page)) {
 			unlock_page(page);
 			return 0; /* retry */
 		}

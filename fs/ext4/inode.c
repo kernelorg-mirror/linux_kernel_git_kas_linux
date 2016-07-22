@@ -1237,7 +1237,7 @@ retry_journal:
 	}
 
 	lock_page(page);
-	if (page->mapping != mapping) {
+	if (page_mapping(page) != mapping) {
 		/* The page got truncated from under us */
 		unlock_page(page);
 		put_page(page);
@@ -2974,7 +2974,7 @@ retry_journal:
 	}
 
 	lock_page(page);
-	if (page->mapping != mapping) {
+	if (page_mapping(page) != mapping) {
 		/* The page got truncated from under us */
 		unlock_page(page);
 		put_page(page);
