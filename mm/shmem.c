@@ -899,6 +899,7 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 					 */
 					clear_highpage(page);
 					unlock_page(page);
+					start++; // XXX?
 					continue;
 				}
 				index += HPAGE_PMD_NR - 1;
