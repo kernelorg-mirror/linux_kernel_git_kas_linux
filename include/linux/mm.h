@@ -1054,6 +1054,7 @@ struct address_space *page_file_mapping(struct page *page)
  */
 static inline pgoff_t page_index(struct page *page)
 {
+	page = compound_head(page);
 	if (unlikely(PageSwapCache(page)))
 		return page_private(page);
 	return page->index;
