@@ -1665,20 +1665,32 @@ static void mpage_release_unused_pages(struct mpage_da_data *mpd,
 		if (nr_pages == 0)
 			break;
 		for (i = 0; i < nr_pages; i++) {
-			struct page *page = pvec.pages[i];
+			struct page *page = compound_head(pvec.pages[i]);
+
 			if (page->index > end)
 				break;
 			BUG_ON(!PageLocked(page));
 			BUG_ON(PageWriteback(page));
 			if (invalidate) {
+				unsigned long offset, len;
+
+				offset = (index % hpage_nr_pages(page));
+				len = min_t(unsigned long, end - page->index,
+						hpage_nr_pages(page));
+
 				if (page_mapped(page))
 					clear_page_dirty_for_io(page);
-				block_invalidatepage(page, 0, PAGE_SIZE);
+				block_invalidatepage(page, offset << PAGE_SHIFT,
+						len << PAGE_SHIFT);
 				ClearPageUptodate(page);
 			}
 			unlock_page(page);
+			if (PageTransHuge(page))
+				break;
 		}
-		index = pvec.pages[nr_pages - 1]->index + 1;
+		index = page_to_pgoff(pvec.pages[nr_pages - 1]) + 1;
+		if (PageTransCompound(pvec.pages[nr_pages - 1]))
+			index = round_up(index, HPAGE_PMD_NR);
 		pagevec_release(&pvec);
 	}
 }
@@ -2112,16 +2124,16 @@ static int mpage_submit_page(struct mpage_da_data *mpd, struct page *page)
 	loff_t size = i_size_read(mpd->inode);
 	int err;
 
-	BUG_ON(page->index != mpd->first_page);
-	if (page->index == size >> PAGE_SHIFT)
-		len = size & ~PAGE_MASK;
-	else
-		len = PAGE_SIZE;
+	page = compound_head(page);
+	len = hpage_size(page);
+	if (page->index + hpage_nr_pages(page) - 1 == size >> PAGE_SHIFT)
+		len = size & ~hpage_mask(page);
+
 	clear_page_dirty_for_io(page);
 	err = ext4_bio_write_page(&mpd->io_submit, page, len, mpd->wbc, false);
 	if (!err)
-		mpd->wbc->nr_to_write--;
-	mpd->first_page++;
+		mpd->wbc->nr_to_write -= hpage_nr_pages(page);
+	mpd->first_page = round_up(mpd->first_page + 1, hpage_nr_pages(page));
 
 	return err;
 }
@@ -2269,12 +2281,16 @@ static int mpage_map_and_submit_buffers(struct mpage_da_data *mpd)
 			break;
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
+			unsigned long diff;
 
-			if (page->index > end)
+			if (page_to_pgoff(page) > end)
 				break;
 			/* Up to 'end' pages must be contiguous */
-			BUG_ON(page->index != start);
+			BUG_ON(page_to_pgoff(page) != start);
+			diff = (page - compound_head(page)) << bpp_bits;
 			bh = head = page_buffers(page);
+			while (diff--)
+				bh = bh->b_this_page;
 			do {
 				if (lblk < mpd->map.m_lblk)
 					continue;
@@ -2311,7 +2327,10 @@ static int mpage_map_and_submit_buffers(struct mpage_da_data *mpd)
 			 * supports blocksize < pagesize as we will try to
 			 * convert potentially unmapped parts of inode.
 			 */
-			mpd->io_submit.io_end->size += PAGE_SIZE;
+			if (PageTransCompound(page))
+				mpd->io_submit.io_end->size += HPAGE_PMD_SIZE;
+			else
+				mpd->io_submit.io_end->size += PAGE_SIZE;
 			/* Page fully mapped - let IO run! */
 			err = mpage_submit_page(mpd, page);
 			if (err < 0) {
@@ -2319,6 +2338,10 @@ static int mpage_map_and_submit_buffers(struct mpage_da_data *mpd)
 				return err;
 			}
 			start++;
+			if (PageTransCompound(page)) {
+				start = round_up(start, HPAGE_PMD_NR);
+				break;
+			}
 		}
 		pagevec_release(&pvec);
 	}
@@ -2555,7 +2578,7 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 			 * mapping. However, page->index will not change
 			 * because we have a reference on the page.
 			 */
-			if (page->index > end)
+			if (page_to_pgoff(page) > end)
 				goto out;
 
 			/*
@@ -2570,7 +2593,7 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 				goto out;
 
 			/* If we can't merge this page, we are done. */
-			if (mpd->map.m_len > 0 && mpd->next_page != page->index)
+			if (mpd->map.m_len > 0 && mpd->next_page != page_to_pgoff(page))
 				goto out;
 
 			lock_page(page);
@@ -2584,7 +2607,7 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 			if (!PageDirty(page) ||
 			    (PageWriteback(page) &&
 			     (mpd->wbc->sync_mode == WB_SYNC_NONE)) ||
-			    unlikely(page->mapping != mapping)) {
+			    unlikely(page_mapping(page) != mapping)) {
 				unlock_page(page);
 				continue;
 			}
@@ -2593,8 +2616,10 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 			BUG_ON(PageWriteback(page));
 
 			if (mpd->map.m_len == 0)
-				mpd->first_page = page->index;
-			mpd->next_page = page->index + 1;
+				mpd->first_page = page_to_pgoff(page);
+			page = compound_head(page);
+			mpd->next_page = round_up(page->index + 1,
+					hpage_nr_pages(page));
 			/* Add all dirty buffers to mpd */
 			lblk = ((ext4_lblk_t)page->index) <<
 				(PAGE_SHIFT - blkbits);
