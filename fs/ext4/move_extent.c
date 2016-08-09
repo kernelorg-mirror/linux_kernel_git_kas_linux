@@ -210,7 +210,9 @@ mext_page_mkuptodate(struct page *page, unsigned from, unsigned to)
 				return err;
 			}
 			if (!buffer_mapped(bh)) {
-				zero_user(page, block_start, blocksize);
+				zero_user(page + block_start / PAGE_SIZE,
+						block_start % PAGE_SIZE,
+						blocksize);
 				set_buffer_uptodate(bh);
 				continue;
 			}
@@ -267,10 +269,11 @@ move_extent_per_page(struct file *o_filp, struct inode *donor_inode,
 	unsigned int tmp_data_size, data_size, replaced_size;
 	int i, err2, jblocks, retries = 0;
 	int replaced_count = 0;
-	int from = data_offset_in_page << orig_inode->i_blkbits;
+	int from;
 	int blocks_per_page = PAGE_SIZE >> orig_inode->i_blkbits;
 	struct super_block *sb = orig_inode->i_sb;
 	struct buffer_head *bh = NULL;
+	int diff;
 
 	/*
 	 * It needs twice the amount of ordinary journal buffers because
@@ -355,6 +358,9 @@ again:
 		goto unlock_pages;
 	}
 data_copy:
+	diff = (pagep[0] - compound_head(pagep[0])) * blocks_per_page;
+	from = (data_offset_in_page + diff) << orig_inode->i_blkbits;
+	pagep[0] = compound_head(pagep[0]);
 	*err = mext_page_mkuptodate(pagep[0], from, from + replaced_size);
 	if (*err)
 		goto unlock_pages;
@@ -384,7 +390,7 @@ data_copy:
 	if (!page_has_buffers(pagep[0]))
 		create_empty_buffers(pagep[0], 1 << orig_inode->i_blkbits, 0);
 	bh = page_buffers(pagep[0]);
-	for (i = 0; i < data_offset_in_page; i++)
+	for (i = 0; i < data_offset_in_page + diff; i++)
 		bh = bh->b_this_page;
 	for (i = 0; i < block_len_in_page; i++) {
 		*err = ext4_get_block(orig_inode, orig_blk_offset + i, bh, 0);
