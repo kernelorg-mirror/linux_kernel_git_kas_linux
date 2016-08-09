@@ -703,27 +703,32 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 				continue;
 			}
 			wait_on_page_writeback(page);
+
 			if (page_mapped(page)) {
+				loff_t begin, len;
+
+				begin = index << PAGE_SHIFT;
 				if (!did_range_unmap) {
 					/*
 					 * Zap the rest of the file in one hit.
 					 */
+					len = (loff_t)(1 + end - index) <<
+						PAGE_SHIFT;
+					if (len < hpage_size(page))
+						len = hpage_size(page);
 					unmap_mapping_range(mapping,
-					   (loff_t)index << PAGE_SHIFT,
-					   (loff_t)(1 + end - index)
-							 << PAGE_SHIFT,
-							 0);
+							begin, len, 0);
 					did_range_unmap = 1;
 				} else {
 					/*
 					 * Just zap this page
 					 */
-					unmap_mapping_range(mapping,
-					   (loff_t)index << PAGE_SHIFT,
-					   PAGE_SIZE, 0);
+					len = hpage_size(page);
+					unmap_mapping_range(mapping, begin,
+							len, 0);
 				}
 			}
-			BUG_ON(page_mapped(page));
+			VM_BUG_ON_PAGE(page_mapped(page), page);
 			ret2 = do_launder_page(mapping, page);
 			if (ret2 == 0) {
 				if (!invalidate_complete_page2(mapping, page))
@@ -734,9 +739,9 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 			unlock_page(page);
 		}
 		pagevec_remove_exceptionals(&pvec);
+		index += pvec.nr ? hpage_nr_pages(pvec.pages[pvec.nr - 1]) : 1;
 		pagevec_release(&pvec);
 		cond_resched();
-		index++;
 	}
 	cleancache_invalidate_inode(mapping);
 	return ret;
