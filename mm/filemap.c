@@ -121,9 +121,8 @@ static int page_cache_tree_insert_huge(struct address_space *mapping,
 	/* Wipe shadow entires */
 	radix_tree_for_each_slot(slot, &mapping->page_tree, &iter,
 			page->index) {
-		if (iter.index >= page->index + HPAGE_PMD_NR)
+		if (iter.index >= page->index + hpage_nr_pages(page))
 			break;
-
 		p = radix_tree_deref_slot_protected(slot, &mapping->tree_lock);
 		if (!p)
 			continue;
@@ -149,10 +148,15 @@ static int page_cache_tree_insert_huge(struct address_space *mapping,
 	if (error)
 		return error;
 
-	count_vm_event(THP_FILE_ALLOC);
-	mapping->nrpages += HPAGE_PMD_NR;
-	*shadowp = NULL;
-	__inc_node_page_state(page, NR_FILE_THPS);
+	if (PageHuge(page)) {
+		mapping->nrpages += 1 << compound_order(page);
+	} else if (PageTransHuge(page)) {
+		count_vm_event(THP_FILE_ALLOC);
+		mapping->nrpages += HPAGE_PMD_NR;
+		*shadowp = NULL;
+		__inc_node_page_state(page, NR_FILE_THPS);
+	} else
+		BUG();
 
 	__radix_tree_lookup(&mapping->page_tree, page->index, &node, NULL);
 	if (node) {
@@ -178,7 +182,7 @@ static int page_cache_tree_insert(struct address_space *mapping,
 	void **slot;
 	int error;
 
-	if (PageTransHuge(page))
+	if (PageCompound(page))
 		return page_cache_tree_insert_huge(mapping, page, shadowp);
 
 	error = __radix_tree_create(&mapping->page_tree, page->index, 0,
@@ -235,7 +239,7 @@ static void page_cache_tree_delete(struct address_space *mapping,
 {
 	struct radix_tree_node *node;
 	void **slot;
-	int nr = PageHuge(page) ? 1 : hpage_nr_pages(page);
+	int nr = hpage_nr_pages(page);
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(PageTail(page), page);
@@ -1186,9 +1190,9 @@ repeat:
 		}
 
 		/* For multi-order entries, find relevant subpage */
-		if (PageTransHuge(page)) {
+		if (PageCompound(page)) {
 			VM_BUG_ON(offset - page->index < 0);
-			VM_BUG_ON(offset - page->index >= HPAGE_PMD_NR);
+			VM_BUG_ON(offset - page->index >= 1 << compound_order(page));
 			page += offset - page->index;
 		}
 	}
@@ -1556,16 +1560,17 @@ repeat:
 		}
 
 		/* For multi-order entries, find relevant subpage */
-		if (PageTransHuge(page)) {
+		if (PageCompound(page)) {
 			VM_BUG_ON(index - page->index < 0);
-			VM_BUG_ON(index - page->index >= HPAGE_PMD_NR);
+			VM_BUG_ON(index - page->index >=
+					1 << compound_order(page));
 			page += index - page->index;
 		}
 
 		pages[ret] = page;
 		if (++ret == nr_pages)
 			break;
-		if (!PageTransCompound(page))
+		if (PageHuge(page) || !PageTransCompound(page))
 			continue;
 		for (refs = 0; ret < nr_pages &&
 				(index + 1) % HPAGE_PMD_NR;
