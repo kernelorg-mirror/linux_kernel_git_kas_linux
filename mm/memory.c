@@ -3488,8 +3488,16 @@ static int wp_huge_pmd(struct vm_fault *vmf, pmd_t orig_pmd)
 		return vmf->vma->vm_ops->pmd_fault(vmf->vma, vmf->address,
 						   vmf->pmd, vmf->flags);
 
+	if (vmf->vma->vm_flags & VM_SHARED) {
+		/* Clear PMD */
+		zap_page_range_single(vmf->vma, vmf->address & HPAGE_PMD_MASK,
+				HPAGE_PMD_SIZE, NULL);
+
+		/* Refault to establish writable PMD */
+		return 0;
+	}
+
 	/* COW handled on pte level: split pmd */
-	VM_BUG_ON_VMA(vmf->vma->vm_flags & VM_SHARED, vmf->vma);
 	__split_huge_pmd(vmf->vma, vmf->pmd, vmf->address, false, NULL);
 
 	return VM_FAULT_FALLBACK;
