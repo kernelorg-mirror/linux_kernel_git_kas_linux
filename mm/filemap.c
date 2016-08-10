@@ -114,7 +114,7 @@ static void page_cache_tree_delete(struct address_space *mapping,
 				   struct page *page, void *shadow)
 {
 	struct radix_tree_node *node;
-	int nr = PageHuge(page) ? 1 : hpage_nr_pages(page);
+	int nr = hpage_nr_pages(page);
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(PageTail(page), page);
@@ -668,7 +668,7 @@ static int __add_to_page_cache_locked(struct page *page,
 	page->index = offset;
 
 	spin_lock_irq(&mapping->tree_lock);
-	if (PageTransHuge(page)) {
+	if (PageCompound(page)) {
 		struct radix_tree_iter iter;
 		void **slot;
 		void *p;
@@ -677,7 +677,7 @@ static int __add_to_page_cache_locked(struct page *page,
 
 		/* Wipe shadow entires */
 		radix_tree_for_each_slot(slot, &mapping->page_tree, &iter, offset) {
-			if (iter.index >= offset + HPAGE_PMD_NR)
+			if (iter.index >= offset + hpage_nr_pages(page))
 				break;
 
 			p = radix_tree_deref_slot_protected(slot,
@@ -699,10 +699,15 @@ static int __add_to_page_cache_locked(struct page *page,
 					compound_order(page), page);
 
 		if (!error) {
-			count_vm_event(THP_FILE_ALLOC);
-			mapping->nrpages += HPAGE_PMD_NR;
-			*shadowp = NULL;
-			__inc_node_page_state(page, NR_FILE_THPS);
+			if (hugetlb) {
+				mapping->nrpages += 1 << compound_order(page);
+			} else if (PageTransHuge(page)) {
+				count_vm_event(THP_FILE_ALLOC);
+				mapping->nrpages += HPAGE_PMD_NR;
+				*shadowp = NULL;
+				__inc_node_page_state(page, NR_FILE_THPS);
+			} else
+				BUG();
 		}
 	} else {
 		error = page_cache_tree_insert(mapping, page, shadowp);
@@ -1144,9 +1149,9 @@ repeat:
 		}
 
 		/* For multi-order entries, find relevant subpage */
-		if (PageTransHuge(page)) {
+		if (PageCompound(page)) {
 			VM_BUG_ON(offset - page->index < 0);
-			VM_BUG_ON(offset - page->index >= HPAGE_PMD_NR);
+			VM_BUG_ON(offset - page->index >= 1 << compound_order(page));
 			page += offset - page->index;
 		}
 	}
@@ -1514,16 +1519,17 @@ repeat:
 		}
 
 		/* For multi-order entries, find relevant subpage */
-		if (PageTransHuge(page)) {
+		if (PageCompound(page)) {
 			VM_BUG_ON(index - page->index < 0);
-			VM_BUG_ON(index - page->index >= HPAGE_PMD_NR);
+			VM_BUG_ON(index - page->index >=
+					1 << compound_order(page));
 			page += index - page->index;
 		}
 
 		pages[ret] = page;
 		if (++ret == nr_pages)
 			break;
-		if (!PageTransCompound(page))
+		if (PageHuge(page) || !PageTransCompound(page))
 			continue;
 		for (refs = 0; ret < nr_pages &&
 				(index + 1) % HPAGE_PMD_NR;
