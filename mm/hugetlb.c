@@ -622,13 +622,6 @@ static pgoff_t vma_hugecache_offset(struct hstate *h,
 			(vma->vm_pgoff >> huge_page_order(h));
 }
 
-pgoff_t linear_hugepage_index(struct vm_area_struct *vma,
-				     unsigned long address)
-{
-	return vma_hugecache_offset(hstate_vma(vma), vma, address);
-}
-EXPORT_SYMBOL_GPL(linear_hugepage_index);
-
 /*
  * Return the size of the pages allocated when backing a VMA. In the majority
  * cases this will be same size as used by the page table entries.
@@ -3605,7 +3598,7 @@ static struct page *hugetlbfs_pagecache_page(struct hstate *h,
 	pgoff_t idx;
 
 	mapping = vma->vm_file->f_mapping;
-	idx = vma_hugecache_offset(h, vma, address);
+	idx = linear_page_index(vma, address);
 
 	return find_lock_page(mapping, idx);
 }
@@ -3622,7 +3615,7 @@ static bool hugetlbfs_pagecache_present(struct hstate *h,
 	struct page *page;
 
 	mapping = vma->vm_file->f_mapping;
-	idx = vma_hugecache_offset(h, vma, address);
+	idx = linear_page_index(vma, address);
 
 	page = find_get_page(mapping, idx);
 	if (page)
@@ -3677,7 +3670,7 @@ static int hugetlb_no_page(struct mm_struct *mm, struct vm_area_struct *vma,
 retry:
 	page = find_lock_page(mapping, idx);
 	if (!page) {
-		size = i_size_read(mapping->host) >> huge_page_shift(h);
+		size = i_size_read(mapping->host) >> PAGE_SHIFT;
 		if (idx >= size)
 			goto out;
 		page = alloc_huge_page(vma, address, 0);
@@ -3738,7 +3731,7 @@ retry:
 	}
 
 	ptl = huge_pte_lock(h, mm, ptep);
-	size = i_size_read(mapping->host) >> huge_page_shift(h);
+	size = i_size_read(mapping->host) >> PAGE_SHIFT;
 	if (idx >= size)
 		goto backout;
 
@@ -3786,7 +3779,7 @@ u32 hugetlb_fault_mutex_hash(struct hstate *h, struct mm_struct *mm,
 
 	if (vma->vm_flags & VM_SHARED) {
 		key[0] = (unsigned long) mapping;
-		key[1] = idx;
+		key[1] = idx >> huge_page_order(h);
 	} else {
 		key[0] = (unsigned long) mm;
 		key[1] = address >> huge_page_shift(h);
@@ -3842,7 +3835,7 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	}
 
 	mapping = vma->vm_file->f_mapping;
-	idx = vma_hugecache_offset(h, vma, address);
+	idx = linear_page_index(vma, address);
 
 	/*
 	 * Serialize hugepage allocation and instantiation, so that we don't

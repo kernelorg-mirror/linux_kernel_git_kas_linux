@@ -165,10 +165,7 @@ static void page_cache_tree_delete(struct address_space *mapping,
 {
 	struct radix_tree_node *node;
 	void **slot;
-	int nr;
-
-	/* hugetlb pages are represented by one entry in the radix tree */
-	nr = PageHuge(page) ? 1 : hpage_nr_pages(page);
+	int nr = hpage_nr_pages(page);
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(PageTail(page), page);
@@ -1557,16 +1554,17 @@ repeat:
 		}
 
 		/* For multi-order entries, find relevant subpage */
-		if (PageTransHuge(page)) {
+		if (PageCompound(page)) {
 			VM_BUG_ON(index - page->index < 0);
-			VM_BUG_ON(index - page->index >= HPAGE_PMD_NR);
+			VM_BUG_ON(index - page->index >=
+					1 << compound_order(page));
 			page += index - page->index;
 		}
 
 		pages[ret] = page;
 		if (++ret == nr_pages)
 			break;
-		if (!PageTransCompound(page))
+		if (PageHuge(page) || !PageTransCompound(page))
 			continue;
 		for (refs = 0; ret < nr_pages &&
 				(index + 1) % HPAGE_PMD_NR;

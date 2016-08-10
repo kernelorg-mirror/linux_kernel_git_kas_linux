@@ -310,7 +310,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 
 			if (!trylock_page(page))
 				continue;
-			WARN_ON(page_to_index(page) != index);
+			WARN_ON(page_to_pgoff(page) != index);
 			if (PageWriteback(page)) {
 				unlock_page(page);
 				continue;
@@ -427,7 +427,7 @@ restart:	cond_resched();
 			}
 
 			lock_page(page);
-			WARN_ON(page_to_index(page) != index);
+			WARN_ON(page_to_pgoff(page) != index);
 			wait_on_page_writeback(page);
 
 			if (PageTransHuge(page)) {
@@ -578,7 +578,7 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 			if (!trylock_page(page))
 				continue;
 
-			WARN_ON(page_to_index(page) != index);
+			WARN_ON(page_to_pgoff(page) != index);
 
 			/* Is 'start' or 'end' in the middle of THP ? */
 			if (PageTransHuge(page) &&
@@ -697,7 +697,7 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 			}
 
 			lock_page(page);
-			WARN_ON(page_to_index(page) != index);
+			WARN_ON(page_to_pgoff(page) != index);
 			if (page->mapping != mapping) {
 				unlock_page(page);
 				continue;
