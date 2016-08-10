@@ -3451,8 +3451,17 @@ static int wp_huge_pmd(struct fault_env *fe, pmd_t orig_pmd)
 		return fe->vma->vm_ops->pmd_fault(fe->vma, fe->address, fe->pmd,
 				fe->flags);
 
+	if (fe->vma->vm_flags & VM_SHARED) {
+		/* Clear PMD */
+		zap_page_range_single(fe->vma, fe->address,
+				HPAGE_PMD_SIZE, NULL);
+		VM_BUG_ON(!pmd_none(*fe->pmd));
+
+		/* Refault to establish writable PMD */
+		return 0;
+	}
+
 	/* COW handled on pte level: split pmd */
-	VM_BUG_ON_VMA(fe->vma->vm_flags & VM_SHARED, fe->vma);
 	split_huge_pmd(fe->vma, fe->pmd, fe->address);
 
 	return VM_FAULT_FALLBACK;
