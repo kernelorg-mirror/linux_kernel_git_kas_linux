@@ -1548,7 +1548,7 @@ repeat:
 /**
  * find_get_pages_contig - gang contiguous pagecache lookup
  * @mapping:	The address_space to search
- * @index:	The starting page index
+ * @start:	The starting page index
  * @nr_pages:	The maximum number of pages
  * @pages:	Where the resulting pages are placed
  *
@@ -1641,7 +1641,7 @@ EXPORT_SYMBOL(find_get_pages_contig);
 /**
  * find_get_pages_tag - find and return pages that match @tag
  * @mapping:	the address_space to search
- * @index:	the starting page index
+ * @indexp:	the starting page index
  * @tag:	the tag index
  * @nr_pages:	the maximum number of pages
  * @pages:	where the resulting pages are placed
