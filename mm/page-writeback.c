@@ -2430,19 +2430,22 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 
 	if (mapping_cap_account_dirty(mapping)) {
 		struct bdi_writeback *wb;
+		struct zone *zone = page_zone(page);
+		pg_data_t *pgdat = page_pgdat(page);
+		int nr = hpage_nr_pages(page);
 
 		inode_attach_wb(inode, page);
 		wb = inode_to_wb(inode);
 
-		mem_cgroup_inc_page_stat(page, MEM_CGROUP_STAT_DIRTY);
-		__inc_node_page_state(page, NR_FILE_DIRTY);
-		__inc_zone_page_state(page, NR_ZONE_WRITE_PENDING);
-		__inc_node_page_state(page, NR_DIRTIED);
-		__inc_wb_stat(wb, WB_RECLAIMABLE);
-		__inc_wb_stat(wb, WB_DIRTIED);
-		task_io_account_write(PAGE_SIZE);
-		current->nr_dirtied++;
-		this_cpu_inc(bdp_ratelimits);
+		mem_cgroup_update_page_stat(page, MEM_CGROUP_STAT_DIRTY, nr);
+		__mod_node_page_state(pgdat, NR_FILE_DIRTY, nr);
+		__mod_zone_page_state(zone, NR_ZONE_WRITE_PENDING, nr);
+		__mod_node_page_state(pgdat, NR_DIRTIED, nr);
+		__add_wb_stat(wb, WB_RECLAIMABLE, nr);
+		__add_wb_stat(wb, WB_DIRTIED, nr);
+		task_io_account_write(nr * PAGE_SIZE);
+		current->nr_dirtied += nr;
+		this_cpu_add(bdp_ratelimits, nr);
 	}
 }
 EXPORT_SYMBOL(account_page_dirtied);
@@ -2456,11 +2459,15 @@ void account_page_cleaned(struct page *page, struct address_space *mapping,
 			  struct bdi_writeback *wb)
 {
 	if (mapping_cap_account_dirty(mapping)) {
-		mem_cgroup_dec_page_stat(page, MEM_CGROUP_STAT_DIRTY);
-		dec_node_page_state(page, NR_FILE_DIRTY);
-		dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
-		dec_wb_stat(wb, WB_RECLAIMABLE);
-		task_io_account_cancelled_write(PAGE_SIZE);
+		struct zone *zone = page_zone(page);
+		pg_data_t *pgdat = page_pgdat(page);
+		int nr = hpage_nr_pages(page);
+
+		mem_cgroup_update_page_stat(page, MEM_CGROUP_STAT_DIRTY, -nr);
+		mod_node_page_state(pgdat, NR_FILE_DIRTY, -nr);
+		mod_zone_page_state(zone, NR_ZONE_WRITE_PENDING, -nr);
+		add_wb_stat(wb, WB_RECLAIMABLE, -nr);
+		task_io_account_cancelled_write(PAGE_SIZE * nr);
 	}
 }
 
@@ -2520,14 +2527,16 @@ void account_page_redirty(struct page *page)
 	struct address_space *mapping = page->mapping;
 
 	if (mapping && mapping_cap_account_dirty(mapping)) {
+		pg_data_t *pgdat = page_pgdat(page);
+		int nr = hpage_nr_pages(page);
 		struct inode *inode = mapping->host;
 		struct bdi_writeback *wb;
 		bool locked;
 
 		wb = unlocked_inode_to_wb_begin(inode, &locked);
-		current->nr_dirtied--;
-		dec_node_page_state(page, NR_DIRTIED);
-		dec_wb_stat(wb, WB_DIRTIED);
+		current->nr_dirtied -= nr;
+		mod_node_page_state(pgdat, NR_DIRTIED, -nr);
+		add_wb_stat(wb, WB_DIRTIED, -nr);
 		unlocked_inode_to_wb_end(inode, locked);
 	}
 }
@@ -2713,10 +2722,15 @@ int clear_page_dirty_for_io(struct page *page)
 		 */
 		wb = unlocked_inode_to_wb_begin(inode, &locked);
 		if (TestClearPageDirty(page)) {
-			mem_cgroup_dec_page_stat(page, MEM_CGROUP_STAT_DIRTY);
-			dec_node_page_state(page, NR_FILE_DIRTY);
-			dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
-			dec_wb_stat(wb, WB_RECLAIMABLE);
+			struct zone *zone = page_zone(page);
+			pg_data_t *pgdat = page_pgdat(page);
+			int nr = hpage_nr_pages(page);
+
+			mem_cgroup_update_page_stat(page,
+					MEM_CGROUP_STAT_DIRTY, -nr);
+			mod_node_page_state(pgdat, NR_FILE_DIRTY, -nr);
+			mod_zone_page_state(zone, NR_ZONE_WRITE_PENDING, -nr);
+			add_wb_stat(wb, WB_RECLAIMABLE, -nr);
 			ret = 1;
 		}
 		unlocked_inode_to_wb_end(inode, locked);
@@ -2760,10 +2774,15 @@ int test_clear_page_writeback(struct page *page)
 		ret = TestClearPageWriteback(page);
 	}
 	if (ret) {
-		mem_cgroup_dec_page_stat(page, MEM_CGROUP_STAT_WRITEBACK);
-		dec_node_page_state(page, NR_WRITEBACK);
-		dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
-		inc_node_page_state(page, NR_WRITTEN);
+		struct zone *zone = page_zone(page);
+		pg_data_t *pgdat = page_pgdat(page);
+		int nr = hpage_nr_pages(page);
+
+		mem_cgroup_update_page_stat(page,
+				MEM_CGROUP_STAT_WRITEBACK, -nr);
+		mod_node_page_state(pgdat, NR_WRITEBACK, -nr);
+		mod_zone_page_state(zone, NR_ZONE_WRITE_PENDING, -nr);
+		mod_node_page_state(pgdat, NR_WRITTEN, nr);
 	}
 	unlock_page_memcg(page);
 	return ret;
@@ -2815,9 +2834,14 @@ int __test_set_page_writeback(struct page *page, bool keep_write)
 		ret = TestSetPageWriteback(page);
 	}
 	if (!ret) {
-		mem_cgroup_inc_page_stat(page, MEM_CGROUP_STAT_WRITEBACK);
-		inc_node_page_state(page, NR_WRITEBACK);
-		inc_zone_page_state(page, NR_ZONE_WRITE_PENDING);
+		struct zone *zone = page_zone(page);
+		pg_data_t *pgdat = page_pgdat(page);
+		int nr = hpage_nr_pages(page);
+
+		mem_cgroup_update_page_stat(page,
+				MEM_CGROUP_STAT_WRITEBACK, nr);
+		mod_node_page_state(pgdat, NR_WRITEBACK, nr);
+		mod_zone_page_state(zone, NR_ZONE_WRITE_PENDING, nr);
 	}
 	unlock_page_memcg(page);
 	return ret;
