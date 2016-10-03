@@ -61,6 +61,16 @@ static inline void __add_wb_stat(struct bdi_writeback *wb,
 	__percpu_counter_add(&wb->stat[item], amount, WB_STAT_BATCH);
 }
 
+static inline void add_wb_stat(struct bdi_writeback *wb,
+				 enum wb_stat_item item, s64 amount)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	__add_wb_stat(wb, item, amount);
+	local_irq_restore(flags);
+}
+
 static inline void __inc_wb_stat(struct bdi_writeback *wb,
 				 enum wb_stat_item item)
 {
