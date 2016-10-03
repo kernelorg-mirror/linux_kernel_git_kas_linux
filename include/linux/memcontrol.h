@@ -29,6 +29,7 @@
 #include <linux/mmzone.h>
 #include <linux/writeback.h>
 #include <linux/page-flags.h>
+#include <linux/mm.h>
 
 struct mem_cgroup;
 struct page;
@@ -517,18 +518,6 @@ static inline void mem_cgroup_update_page_stat(struct page *page,
 		this_cpu_add(page->mem_cgroup->stat->count[idx], val);
 }
 
-static inline void mem_cgroup_inc_page_stat(struct page *page,
-					    enum mem_cgroup_stat_index idx)
-{
-	mem_cgroup_update_page_stat(page, idx, 1);
-}
-
-static inline void mem_cgroup_dec_page_stat(struct page *page,
-					    enum mem_cgroup_stat_index idx)
-{
-	mem_cgroup_update_page_stat(page, idx, -1);
-}
-
 unsigned long mem_cgroup_soft_limit_reclaim(pg_data_t *pgdat, int order,
 						gfp_t gfp_mask,
 						unsigned long *total_scanned);
@@ -739,13 +728,8 @@ static inline bool mem_cgroup_oom_synchronize(bool wait)
 	return false;
 }
 
-static inline void mem_cgroup_inc_page_stat(struct page *page,
-					    enum mem_cgroup_stat_index idx)
-{
-}
-
-static inline void mem_cgroup_dec_page_stat(struct page *page,
-					    enum mem_cgroup_stat_index idx)
+static inline void mem_cgroup_update_page_stat(struct page *page,
+				 enum mem_cgroup_stat_index idx, int val)
 {
 }
 
