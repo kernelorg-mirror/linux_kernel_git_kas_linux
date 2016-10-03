@@ -505,6 +505,7 @@ int migrate_page_move_mapping(struct address_space *mapping,
 	 * are mapped to swap space.
 	 */
 	if (newzone != oldzone) {
+		BUG_ON(PageTransHuge(page));
 		__dec_node_state(oldzone->zone_pgdat, NR_FILE_PAGES);
 		__inc_node_state(newzone->zone_pgdat, NR_FILE_PAGES);
 		if (PageSwapBacked(page) && !PageSwapCache(page)) {
