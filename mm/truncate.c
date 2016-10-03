@@ -589,6 +589,7 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 				 * cache -- drop tail pages references.
 				 */
 				get_page(page);
+				pagevec_remove_exceptionals(&pvec);
 				pagevec_release(&pvec);
 			}
 
