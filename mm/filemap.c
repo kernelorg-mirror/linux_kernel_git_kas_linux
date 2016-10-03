@@ -154,6 +154,7 @@ static void page_cache_tree_delete(struct address_space *mapping,
 	 * protected by mapping->tree_lock.
 	 */
 	if (!dax_mapping(mapping) && !workingset_node_pages(node) &&
+			PageTransHuge(page) &&
 			list_empty(&node->private_list)) {
 		node->private_data = mapping;
 		list_lru_add(&workingset_shadow_nodes,
@@ -2170,17 +2171,15 @@ no_huge:
 
 		ret = add_to_page_cache_lru(page, mapping, hoffset,
 				gfp_mask & GFP_KERNEL);
-		if (ret == 0)
-			ret = mapping->a_ops->readpage(file, page);
-		else if (ret == -EEXIST)
-			ret = 0; /* losing race to add is OK */
 
-		if (ret && PageTransHuge(page)) {
-			delete_from_page_cache(page);
-			unlock_page(page);
+		if (ret == -EEXIST && PageTransHuge(page)) {
 			put_page(page);
 			page = NULL;
 			goto no_huge;
+		} else if (ret == 0) {
+			ret = mapping->a_ops->readpage(file, page);
+		} else if (ret == -EEXIST) {
+			ret = 0; /* losing race to add is OK */
 		}
 
 		put_page(page);
