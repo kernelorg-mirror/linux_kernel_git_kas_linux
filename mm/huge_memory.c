@@ -498,10 +498,12 @@ unsigned long thp_get_unmapped_area(struct file *filp, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	loff_t off = (loff_t)pgoff << PAGE_SHIFT;
+	struct inode *inode = filp->f_mapping->host;
 
 	if (addr)
 		goto out;
-	if (!IS_DAX(filp->f_mapping->host) || !IS_ENABLED(CONFIG_FS_DAX_PMD))
+	if ((inode->i_flags & S_HUGE_MODE) == S_HUGE_NEVER &&
+			(!IS_DAX(inode) || !IS_ENABLED(CONFIG_FS_DAX_PMD)))
 		goto out;
 
 	addr = __thp_get_unmapped_area(filp, len, off, flags, PMD_SIZE);
