@@ -141,7 +141,7 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		block_in_file = (sector_t)page->index << (PAGE_SHIFT - blkbits);
 
 		if (PageTransHuge(page) &&
-				IS_ENABLED(TRANSPARENT_HUGE_PAGECACHE)) {
+				IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
 			BUILD_BUG_ON(BIO_MAX_PAGES < HPAGE_PMD_NR);
 			nr = HPAGE_PMD_NR * blocks_per_page;
 			/* XXX: need a better solution ? */
