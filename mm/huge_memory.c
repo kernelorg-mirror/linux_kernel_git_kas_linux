@@ -2096,8 +2096,8 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			 */
 			wait_on_page_writeback(head);
 
-			if (page_has_buffers(head) &&
-					!try_to_free_buffers(head)) {
+			if (page_has_buffers(head) && !try_to_release_page(head,
+						GFP_KERNEL)) {
 				ret = -EBUSY;
 				goto out;
 			}
