@@ -3453,7 +3453,7 @@ static int wp_huge_pmd(struct fault_env *fe, pmd_t orig_pmd)
 
 	if (fe->vma->vm_flags & VM_SHARED) {
 		/* Clear PMD */
-		zap_page_range_single(fe->vma, fe->address,
+		zap_page_range_single(fe->vma, fe->address & HPAGE_PMD_MASK,
 				HPAGE_PMD_SIZE, NULL);
 		VM_BUG_ON(!pmd_none(*fe->pmd));
 
