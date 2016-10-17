@@ -4384,6 +4384,9 @@ void ext4_set_inode_flags(struct inode *inode)
 	if (S_ISREG(inode->i_mode) && !ext4_encrypted_inode(inode)) {
 		if (test_opt(inode->i_sb, DAX))
 			new_fl |= S_DAX;
+#if 1
+		new_fl |= S_HUGE_ALWAYS;
+#else
 		switch (test_opt(inode->i_sb, HUGE_MODE)) {
 		case EXT4_MOUNT_HUGE_NEVER:
 			break;
@@ -4397,6 +4400,7 @@ void ext4_set_inode_flags(struct inode *inode)
 			new_fl |= S_HUGE_ADVISE;
 			break;
 		}
+#endif
 	}
 	mask = S_SYNC | S_APPEND | S_IMMUTABLE | S_NOATIME |
 		S_DIRSYNC | S_DAX | S_HUGE_MODE;
