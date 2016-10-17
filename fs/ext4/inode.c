@@ -4498,6 +4498,9 @@ void ext4_set_inode_flags(struct inode *inode)
 				!ext4_should_journal_data(inode) &&
 				!ext4_has_inline_data(inode))
 			new_fl |= S_DAX;
+#if 1
+		new_fl |= S_HUGE_ALWAYS;
+#else
 		switch (test_opt(inode->i_sb, HUGE_MODE)) {
 		case EXT4_MOUNT_HUGE_NEVER:
 			break;
@@ -4511,6 +4514,7 @@ void ext4_set_inode_flags(struct inode *inode)
 			new_fl |= S_HUGE_ADVISE;
 			break;
 		}
+#endif
 	}
 	if ((new_fl & S_HUGE_MODE) != S_HUGE_NEVER &&
 			EXT4_JOURNAL(inode) != NULL) {
