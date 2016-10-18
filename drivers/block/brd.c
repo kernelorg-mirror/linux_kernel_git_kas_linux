@@ -202,12 +202,15 @@ static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n)
 	size_t copy;
 
 	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	n -= copy;
 	if (!brd_insert_page(brd, sector))
 		return -ENOSPC;
-	if (copy < n) {
+	while (n) {
 		sector += copy >> SECTOR_SHIFT;
 		if (!brd_insert_page(brd, sector))
 			return -ENOSPC;
+		copy = min_t(size_t, n, PAGE_SIZE);
+		n -= copy;
 	}
 	return 0;
 }
@@ -242,6 +245,7 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 	size_t copy;
 
 	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	n -= copy;
 	page = brd_lookup_page(brd, sector);
 	BUG_ON(!page);
 
@@ -249,10 +253,11 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 	memcpy(dst + offset, src, copy);
 	kunmap_atomic(dst);
 
-	if (copy < n) {
+	while (n) {
 		src += copy;
 		sector += copy >> SECTOR_SHIFT;
-		copy = n - copy;
+		copy = min_t(size_t, n, PAGE_SIZE);
+		n -= copy;
 		page = brd_lookup_page(brd, sector);
 		BUG_ON(!page);
 
@@ -274,6 +279,7 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 	size_t copy;
 
 	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	n -= copy;
 	page = brd_lookup_page(brd, sector);
 	if (page) {
 		src = kmap_atomic(page);
@@ -282,10 +288,11 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 	} else
 		memset(dst, 0, copy);
 
-	if (copy < n) {
+	while (n) {
 		dst += copy;
 		sector += copy >> SECTOR_SHIFT;
-		copy = n - copy;
+		copy = min_t(size_t, n, PAGE_SIZE);
+		n -= copy;
 		page = brd_lookup_page(brd, sector);
 		if (page) {
 			src = kmap_atomic(page);
