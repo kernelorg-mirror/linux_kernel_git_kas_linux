@@ -134,7 +134,7 @@ int ext4_mpage_readpages(struct address_space *mapping,
 				goto next_page;
 		}
 
-		if (page_has_buffers(page))
+		if (page_has_buffers(page) || PageTransHuge(page))
 			goto confused;
 
 		block_in_file = (sector_t)page->index << (PAGE_SHIFT - blkbits);
