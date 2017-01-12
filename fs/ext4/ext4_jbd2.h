@@ -353,11 +353,21 @@ static inline int ext4_journal_restart(handle_t *handle, int nblocks)
 	return 0;
 }
 
+static inline int __ext4_journal_blocks_per_page(struct inode *inode, bool thp)
+{
+	int bpp = 0;
+	if (EXT4_JOURNAL(inode) != NULL) {
+		bpp = jbd2_journal_blocks_per_page(inode);
+		if (thp)
+			bpp <<= HPAGE_PMD_ORDER;
+	}
+	return bpp;
+}
+
 static inline int ext4_journal_blocks_per_page(struct inode *inode)
 {
-	if (EXT4_JOURNAL(inode) != NULL)
-		return jbd2_journal_blocks_per_page(inode);
-	return 0;
+	return __ext4_journal_blocks_per_page(inode,
+			(inode->i_flags & S_HUGE_MODE) != S_HUGE_NEVER);
 }
 
 static inline int ext4_journal_force_commit(journal_t *journal)

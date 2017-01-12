@@ -141,6 +141,7 @@ static int __ext4_journalled_writepage(struct page *page, unsigned int len);
 static int ext4_bh_delay_or_unwritten(handle_t *handle, struct buffer_head *bh);
 static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
 				  int pextents);
+static int __ext4_writepage_trans_blocks(struct inode *inode, int bpp);
 
 /*
  * Test whether an inode is a fast symlink.
@@ -4496,6 +4497,21 @@ void ext4_set_inode_flags(struct inode *inode)
 	    !ext4_should_journal_data(inode) && !ext4_has_inline_data(inode) &&
 	    !ext4_encrypted_inode(inode))
 		new_fl |= S_DAX;
+
+	if ((new_fl & S_HUGE_MODE) != S_HUGE_NEVER &&
+			EXT4_JOURNAL(inode) != NULL) {
+		int bpp = __ext4_journal_blocks_per_page(inode, true);
+		int credits = __ext4_writepage_trans_blocks(inode, bpp);
+
+		if (EXT4_JOURNAL(inode)->j_max_transaction_buffers < credits) {
+			pr_warn_once("EXT4-fs (%s): "
+					"journal is too small for huge pages. "
+					"Disable huge pages support.\n",
+					inode->i_sb->s_id);
+			new_fl &= ~S_HUGE_MODE;
+		}
+	}
+
 	inode_set_flags(inode, new_fl,
 			S_SYNC|S_APPEND|S_IMMUTABLE|S_NOATIME|S_DIRSYNC|S_DAX);
 }
@@ -5471,6 +5487,16 @@ static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
 	return ret;
 }
 
+static int __ext4_writepage_trans_blocks(struct inode *inode, int bpp)
+{
+	int ret = ext4_meta_trans_blocks(inode, bpp, bpp);
+
+	/* Account for data blocks for journalled mode */
+	if (ext4_should_journal_data(inode))
+		ret += bpp;
+	return ret;
+}
+
 /*
  * Calculate the total number of credits to reserve to fit
  * the modification of a single pages into a single transaction,
@@ -5484,14 +5510,8 @@ static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
 int ext4_writepage_trans_blocks(struct inode *inode)
 {
 	int bpp = ext4_journal_blocks_per_page(inode);
-	int ret;
 
-	ret = ext4_meta_trans_blocks(inode, bpp, bpp);
-
-	/* Account for data blocks for journalled mode */
-	if (ext4_should_journal_data(inode))
-		ret += bpp;
-	return ret;
+	return __ext4_writepage_trans_blocks(inode, bpp);
 }
 
 /*
