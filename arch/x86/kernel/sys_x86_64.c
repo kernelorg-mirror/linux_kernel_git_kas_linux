@@ -219,7 +219,7 @@ get_unmapped_area:
 	 *
 	 * !in_compat_syscall() check to avoid high addresses for x32.
 	 */
-	if (addr > DEFAULT_MAP_WINDOW && !in_compat_syscall())
+	if (!always_use_va57 && addr > DEFAULT_MAP_WINDOW && !in_compat_syscall())
 		info.high_limit += TASK_SIZE_MAX - DEFAULT_MAP_WINDOW;
 
 	info.align_mask = 0;

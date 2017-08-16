@@ -31,6 +31,7 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/mm.h>
 #include <linux/compat.h>
+#include <linux/debugfs.h>
 #include <asm/elf.h>
 
 #include "physaddr.h"
@@ -44,8 +45,27 @@ unsigned long task_size_32bit(void)
 	return IA32_PAGE_OFFSET;
 }
 
+bool always_use_va57 = true;
+
+#ifdef CONFIG_DEBUG_FS
+static int __init use_va57_debugfs(void)
+{
+	void *ret;
+
+	ret = debugfs_create_bool("always_use_va57", 0644,
+			NULL, &always_use_va57);
+	if (!ret)
+		pr_warn("Failed to create always_use_va57 in debugfs");
+	return 0;
+}
+
+late_initcall(use_va57_debugfs);
+#endif
+
 unsigned long task_size_64bit(int full_addr_space)
 {
+	if (always_use_va57)
+		return TASK_SIZE_MAX;
 	return full_addr_space ? TASK_SIZE_MAX : DEFAULT_MAP_WINDOW;
 }
 

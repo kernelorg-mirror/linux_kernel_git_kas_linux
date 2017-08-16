@@ -845,6 +845,8 @@ static inline void spin_lock_prefetch(const void *x)
 	((struct pt_regs *)__ptr) - 1;					\
 })
 
+extern bool always_use_va57;
+
 #ifdef CONFIG_X86_32
 /*
  * User space process size: 3GB (default).
@@ -896,7 +898,9 @@ static inline void spin_lock_prefetch(const void *x)
 					0xc0000000 : 0xFFFFe000)
 
 #define TASK_SIZE_LOW		(test_thread_flag(TIF_ADDR32) ? \
-					IA32_PAGE_OFFSET : DEFAULT_MAP_WINDOW)
+					IA32_PAGE_OFFSET : \
+					(always_use_va57 ? TASK_SIZE_MAX : \
+					 DEFAULT_MAP_WINDOW))
 #define TASK_SIZE		(test_thread_flag(TIF_ADDR32) ? \
 					IA32_PAGE_OFFSET : TASK_SIZE_MAX)
 #define TASK_SIZE_OF(child)	((test_tsk_thread_flag(child, TIF_ADDR32)) ? \
