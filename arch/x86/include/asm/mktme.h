@@ -5,6 +5,8 @@
 #include <linux/page_ext.h>
 #include <linux/jump_label.h>
 
+struct vm_area_struct;
+
 #ifdef CONFIG_X86_INTEL_MKTME
 extern phys_addr_t __mktme_keyid_mask;
 extern phys_addr_t mktme_keyid_mask(void);
@@ -29,6 +31,16 @@ static inline int page_keyid(const struct page *page)
 		return 0;
 
 	return lookup_page_ext(page)->keyid;
+}
+
+#define vma_keyid vma_keyid
+int __vma_keyid(struct vm_area_struct *vma);
+static inline int vma_keyid(struct vm_area_struct *vma)
+{
+	if (!mktme_enabled())
+		return 0;
+
+	return __vma_keyid(vma);
 }
 
 #else
