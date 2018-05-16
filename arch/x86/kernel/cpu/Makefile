@@ -19,6 +19,7 @@ CFLAGS_common.o		:= $(nostackp)
 
 obj-y			:= intel_cacheinfo.o scattered.o topology.o
 obj-y			+= common.o
+obj-y			+= early.o
 obj-y			+= rdrand.o
 obj-y			+= match.o
 obj-y			+= bugs.o

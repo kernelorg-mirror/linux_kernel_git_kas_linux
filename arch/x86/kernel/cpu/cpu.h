@@ -45,8 +45,15 @@ struct _tlb_table {
 extern const struct cpu_dev *const __x86_cpu_dev_start[],
 			    *const __x86_cpu_dev_end[];
 
+extern const struct cpu_dev *cpu_devs[];
+extern const struct cpu_dev *this_cpu_dev;
+
 extern void get_cpu_cap(struct cpuinfo_x86 *c);
+extern void get_cpu_vendor(struct cpuinfo_x86 *c);
+extern void get_cpu_address_sizes(struct cpuinfo_x86 *c);
 extern void cpu_detect_cache_sizes(struct cpuinfo_x86 *c);
+extern void identify_cpu_without_cpuid(struct cpuinfo_x86 *c);
+extern void filter_cpuid_features(struct cpuinfo_x86 *c, bool warn);
 
 unsigned int aperfmperf_get_khz(int cpu);
 
