@@ -1562,6 +1562,9 @@ static struct page *compaction_alloc(struct page *migratepage,
 	list_del(&freepage->lru);
 	cc->nr_freepages--;
 
+	/* Prepare the page using the same KeyID as the source page */
+	if (freepage)
+		prep_encrypted_page(freepage, 0, page_keyid(migratepage), false);
 	return freepage;
 }
 

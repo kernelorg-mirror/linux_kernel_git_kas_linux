@@ -4035,6 +4035,53 @@ should_compact_retry(struct alloc_context *ac, unsigned int order, int alloc_fla
 }
 #endif /* CONFIG_COMPACTION */
 
+#ifndef CONFIG_NUMA
+struct page *alloc_pages_vma(gfp_t gfp_mask, int order,
+		struct vm_area_struct *vma, unsigned long addr,
+		int node)
+{
+	struct page *page;
+	bool deferred_zero;
+	int keyid = vma_keyid(vma);
+
+	deferred_zero = deferred_page_zero(keyid, &gfp_mask);
+	page = alloc_pages(gfp_mask, order);
+	if (page)
+		prep_encrypted_page(page, order, keyid, deferred_zero);
+
+	return page;
+}
+#endif
+
+/**
+ * __alloc_pages_node_keyid - allocate a page for a specific KeyID with
+ * preferred allocation node.
+ * @nid: the preferred node ID where memory should be allocated
+ * @keyid: KeyID to use
+ * @gfp_mask: GFP flags for the allocation
+ * @order: the page order
+ *
+ * Like __alloc_pages_node(), but prepares the page for a specific KeyID.
+ *
+ * Return: pointer to the allocated page or %NULL in case of error.
+ */
+struct page * __alloc_pages_node_keyid(int nid, int keyid,
+		gfp_t gfp_mask, unsigned int order)
+{
+	struct page *page;
+	bool deferred_zero;
+
+	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
+	VM_WARN_ON(!node_online(nid));
+
+	deferred_zero = deferred_page_zero(keyid, &gfp_mask);
+	page = __alloc_pages(gfp_mask, order, nid);
+	if (page)
+		prep_encrypted_page(page, order, keyid, deferred_zero);
+
+	return page;
+}
+
 #ifdef CONFIG_LOCKDEP
 static struct lockdep_map __fs_reclaim_map =
 	STATIC_LOCKDEP_MAP_INIT("fs_reclaim", &__fs_reclaim_map);
@@ -4745,6 +4792,33 @@ out:
 	return page;
 }
 EXPORT_SYMBOL(__alloc_pages_nodemask);
+
+/**
+ * __alloc_pages_nodemask_keyid - allocate a page for a specific KeyID.
+ * @gfp_mask: GFP flags for the allocation
+ * @order: the page order
+ * @preferred_nid: the preferred node ID where memory should be allocated
+ * @nodemask: allowed nodemask
+ * @keyid: KeyID to use
+ *
+ * Like __alloc_pages_nodemask(), but prepares the page for a specific KeyID.
+ *
+ * Return: pointer to the allocated page or %NULL in case of error.
+ */
+struct page *
+__alloc_pages_nodemask_keyid(gfp_t gfp_mask, unsigned int order,
+		int preferred_nid, nodemask_t *nodemask, int keyid)
+{
+	struct page *page;
+	bool deferred_zero;
+
+	deferred_zero = deferred_page_zero(keyid, &gfp_mask);
+	page = __alloc_pages_nodemask(gfp_mask, order, preferred_nid, nodemask);
+	if (page)
+		prep_encrypted_page(page, order, keyid, deferred_zero);
+	return page;
+}
+EXPORT_SYMBOL(__alloc_pages_nodemask_keyid);
 
 /*
  * Common helper functions. Never use with __GFP_HIGHMEM because the returned
