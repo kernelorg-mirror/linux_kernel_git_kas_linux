@@ -347,6 +347,33 @@ static void cpa_flush(struct cpa_data *data, int cache)
 
 	BUG_ON(irqs_disabled() && !early_boot_irqs_disabled);
 
+	if (mktme_enabled()) {
+		unsigned long start, end;
+
+		start = PAGE_OFFSET + (cpa->pfn << PAGE_SHIFT);
+		end = start + cpa->numpages * PAGE_SIZE;
+
+		/* Round to cover huge page possibly split by the change */
+		start = round_down(start, direct_gbpages ? PUD_SIZE : PMD_SIZE);
+		end = round_up(end, direct_gbpages ? PUD_SIZE : PMD_SIZE);
+
+		/* Sync all direct mapping for an array */
+		if (cpa->flags & CPA_ARRAY) {
+			start = PAGE_OFFSET;
+			end = PAGE_OFFSET + direct_mapping_size;
+		}
+
+		/*
+		 * Sync per-KeyID direct mappings with the canonical one
+		 * (KeyID-0).
+		 *
+		 * sync_direct_mapping() does full TLB flush.
+		 */
+		sync_direct_mapping(start, end);
+		if (!cache)
+			return;
+	}
+
 	if (cache && !static_cpu_has(X86_FEATURE_CLFLUSH)) {
 		cpa_flush_all(cache);
 		return;

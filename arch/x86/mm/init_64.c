@@ -726,6 +726,7 @@ __kernel_physical_mapping_init(unsigned long paddr_start,
 {
 	bool pgd_changed = false;
 	unsigned long vaddr, vaddr_start, vaddr_end, vaddr_next, paddr_last;
+	int ret;
 
 	paddr_last = paddr_end;
 	vaddr = (unsigned long)__va(paddr_start);
@@ -761,6 +762,9 @@ __kernel_physical_mapping_init(unsigned long paddr_start,
 		spin_unlock(&init_mm.page_table_lock);
 		pgd_changed = true;
 	}
+
+	ret = sync_direct_mapping(vaddr_start, vaddr_end);
+	WARN_ON(ret);
 
 	if (pgd_changed)
 		sync_global_pgds(vaddr_start, vaddr_end - 1);
@@ -1201,10 +1205,13 @@ void __ref vmemmap_free(unsigned long start, unsigned long end,
 static void __meminit
 kernel_physical_mapping_remove(unsigned long start, unsigned long end)
 {
+	int ret;
 	start = (unsigned long)__va(start);
 	end = (unsigned long)__va(end);
 
 	remove_pagetable(start, end, true, NULL);
+	ret = sync_direct_mapping(start, end);
+	WARN_ON(ret);
 }
 
 void __ref arch_remove_memory(int nid, u64 start, u64 size,
