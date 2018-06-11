@@ -140,6 +140,10 @@ The direct mapping covers all memory in the system up to the highest
 memory address (this means in some cases it can also include PCI memory
 holes).
 
+With MKTME, we have multiple direct mappings. One per-KeyID. They are put
+next to each other. PAGE_OFFSET + N * direct_mapping_size can be used to
+find direct mapping for KeyID-N.
+
 vmalloc space is lazily synchronized into the different PML4/PML5 pages of
 the processes using the page fault handler, with init_top_pgt as
 reference.

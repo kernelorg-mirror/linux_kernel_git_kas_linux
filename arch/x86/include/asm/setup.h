@@ -62,6 +62,12 @@ extern void x86_ce4100_early_setup(void);
 static inline void x86_ce4100_early_setup(void) { }
 #endif
 
+#ifdef CONFIG_MEMORY_PHYSICAL_PADDING
+void calculate_direct_mapping_size(void);
+#else
+static inline void calculate_direct_mapping_size(void) { }
+#endif
+
 #ifndef _SETUP
 
 #include <asm/espfix.h>

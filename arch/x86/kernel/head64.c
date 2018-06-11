@@ -60,6 +60,10 @@ EXPORT_SYMBOL(vmalloc_base);
 unsigned long vmemmap_base __ro_after_init = __VMEMMAP_BASE_L4;
 EXPORT_SYMBOL(vmemmap_base);
 #endif
+unsigned long direct_mapping_size __ro_after_init = -1UL;
+EXPORT_SYMBOL(direct_mapping_size);
+unsigned long direct_mapping_mask __ro_after_init = -1UL;
+EXPORT_SYMBOL(direct_mapping_mask);
 
 #define __head	__section(.head.text)
 

@@ -1440,6 +1440,64 @@ unsigned long memory_block_size_bytes(void)
 	return memory_block_size_probed;
 }
 
+#ifdef CONFIG_MEMORY_PHYSICAL_PADDING
+void __init calculate_direct_mapping_size(void)
+{
+	unsigned long available_va;
+
+	/* 1/4 of virtual address space is didicated for direct mapping */
+	available_va = 1UL << (__VIRTUAL_MASK_SHIFT - 1);
+
+	/* How much memory the system has? */
+	direct_mapping_size = max_pfn << PAGE_SHIFT;
+	direct_mapping_size = round_up(direct_mapping_size, 1UL << 40);
+
+	if (!mktme_nr_keyids())
+		goto out;
+
+	/*
+	 * For MKTME we need direct_mapping_size to be power-of-2.
+	 * It makes __pa() implementation efficient.
+	 */
+	direct_mapping_size = roundup_pow_of_two(direct_mapping_size);
+
+	/*
+	 * Not enough virtual address space to address all physical memory with
+	 * MKTME enabled. Even without padding.
+	 *
+	 * Disable MKTME instead.
+	 */
+	if (direct_mapping_size > available_va / (mktme_nr_keyids() + 1)) {
+		pr_err("x86/mktme: Disabled. Not enough virtual address space\n");
+		pr_err("x86/mktme: Consider switching to 5-level paging\n");
+		mktme_disable();
+		goto out;
+	}
+
+	/*
+	 * Virtual address space is divided between per-KeyID direct mappings.
+	 */
+	available_va /= mktme_nr_keyids() + 1;
+out:
+	/* Add padding, if there's enough virtual address space */
+	direct_mapping_size += (1UL << 40) * CONFIG_MEMORY_PHYSICAL_PADDING;
+	if (mktme_nr_keyids())
+		direct_mapping_size = roundup_pow_of_two(direct_mapping_size);
+
+	if (direct_mapping_size > available_va)
+		direct_mapping_size = available_va;
+
+	/*
+	 * For MKTME, make sure direct_mapping_size is still power-of-2
+	 * after adding padding and calculate mask that is used in __pa().
+	 */
+	if (mktme_nr_keyids()) {
+		direct_mapping_size = rounddown_pow_of_two(direct_mapping_size);
+		direct_mapping_mask = direct_mapping_size - 1;
+	}
+}
+#endif
+
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 /*
  * Initialise the sparsemem vmemmap using huge-pages at the PMD level.

@@ -103,10 +103,15 @@ void __init kernel_randomize_memory(void)
 	 * add padding if needed (especially for memory hotplug support).
 	 */
 	BUG_ON(kaslr_regions[0].base != &page_offset_base);
-	memory_tb = DIV_ROUND_UP(max_pfn << PAGE_SHIFT, 1UL << TB_SHIFT) +
-		CONFIG_MEMORY_PHYSICAL_PADDING;
 
-	/* Adapt phyiscal memory region size based on available memory */
+	/*
+	 * Calculate space required to map all physical memory.
+	 * In case of MKTME, we map physical memory multiple times, one for
+	 * each KeyID. If MKTME is disabled mktme_nr_keyids() is 0.
+	 */
+	memory_tb = (direct_mapping_size * (mktme_nr_keyids() + 1)) >> TB_SHIFT;
+
+	/* Adapt physical memory region size based on available memory */
 	if (memory_tb < kaslr_regions[0].size_tb)
 		kaslr_regions[0].size_tb = memory_tb;
 

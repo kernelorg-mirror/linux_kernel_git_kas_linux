@@ -1077,6 +1077,9 @@ void __init setup_arch(char **cmdline_p)
 	 */
 	init_cache_modes();
 
+	 /* direct_mapping_size has to be initialized before KASLR and MKTME */
+	calculate_direct_mapping_size();
+
 	/*
 	 * Define random base addresses for memory sections after max_pfn is
 	 * defined and before each memory section base is used.
