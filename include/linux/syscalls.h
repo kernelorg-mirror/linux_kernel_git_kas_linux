@@ -1000,6 +1000,8 @@ asmlinkage long sys_fspick(int dfd, const char __user *path, unsigned int flags)
 asmlinkage long sys_pidfd_send_signal(int pidfd, int sig,
 				       siginfo_t __user *info,
 				       unsigned int flags);
+asmlinkage long sys_encrypt_mprotect(unsigned long start, size_t len,
+				     unsigned long prot, key_serial_t serial);
 
 /*
  * Architecture-specific system calls

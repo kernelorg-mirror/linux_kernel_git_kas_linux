@@ -349,6 +349,8 @@ COND_SYSCALL(pkey_mprotect);
 COND_SYSCALL(pkey_alloc);
 COND_SYSCALL(pkey_free);
 
+/* multi-key total memory encryption keys */
+COND_SYSCALL(encrypt_mprotect);
 
 /*
  * Architecture specific weak syscall entries.
