@@ -22,6 +22,7 @@ x86-specific Documentation
    intel_mpx
    intel-iommu
    intel_txt
+   mktme/index
    amd-memory-encryption
    pti
    mds
