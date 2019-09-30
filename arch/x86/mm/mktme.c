@@ -1,4 +1,5 @@
 #include <linux/export.h>
+#include <linux/mm.h>
 #include <asm/mktme.h>
 
 /* Mask to extract KeyID from physical address. */
@@ -28,3 +29,12 @@ int mktme_nr_keyids(void)
 }
 
 unsigned int mktme_algs;
+
+int virt_to_keyid(unsigned long addr)
+{
+	unsigned int level;
+	pte_t *pte = lookup_address(addr, &level);
+	if (!pte)
+		return 0;
+	return (pte_val(*pte) & mktme_keyid_mask()) >> mktme_keyid_shift();
+}

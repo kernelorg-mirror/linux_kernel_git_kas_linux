@@ -12,10 +12,12 @@ extern int __mktme_nr_keyids;
 extern int mktme_nr_keyids(void);
 extern unsigned int mktme_algs;
 
+int virt_to_keyid(unsigned long addr);
 #else
 #define mktme_keyid_mask()	((phys_addr_t)0)
 #define mktme_nr_keyids()	0
 #define mktme_keyid_shift()	0
+#define virt_to_keyid(addr)	0
 #endif
 
 #endif
