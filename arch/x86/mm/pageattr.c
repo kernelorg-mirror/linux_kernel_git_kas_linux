@@ -26,6 +26,7 @@
 #include <asm/proto.h>
 #include <asm/pat.h>
 #include <asm/set_memory.h>
+#include <asm/mktme.h>
 
 #include "mm_internal.h"
 
@@ -2092,6 +2093,48 @@ int set_pages_uc(struct page *page, int numpages)
 	return set_memory_uc(addr, numpages);
 }
 EXPORT_SYMBOL(set_pages_uc);
+
+/*
+ * set_memory_keyid - change KeyID of a memory range
+ *
+ * The hardware/CPU does not enforce coherency between mappings of the
+ * same physical page with different KeyIDs or encryption keys.
+ * We are responsible for cache management.
+ */
+int set_memory_keyid(u64 pfn, int numpages, unsigned long keyid)
+{
+	unsigned long address = (unsigned long) __va(PFN_PHYS(pfn));
+	struct cpa_data cpa;
+	int ret;
+
+	if (WARN_ON_ONCE(keyid > mktme_nr_keyids()))
+		return -EINVAL;
+
+	memset(&cpa, 0, sizeof(cpa));
+	cpa.vaddr = &address;
+	cpa.pfn = pfn;
+	cpa.numpages = numpages;
+	cpa.mask_set = __pgprot(keyid << mktme_keyid_shift() | _PAGE_PRESENT);
+	cpa.mask_clr = __pgprot(mktme_keyid_mask());
+	cpa.pgd = init_mm.pgd;
+
+	/*
+	 * Get rid of cachelines with the old KeyID. Speculative access can
+	 * cache the memory after the flush, but it will only create clear
+	 * cache lines. They are harmless.
+	 */
+	cpa_flush(&cpa, 1);
+
+	ret = __change_page_attr_set_clr(&cpa, 1);
+
+	/*
+	 * After changing the KeyID, we need to flush TLBs again in case any
+	 * speculative TLB caching occurred. It's not required to flush cache
+	 * again.
+	 */
+	cpa_flush(&cpa, 0);
+	return ret;
+}
 
 static int _set_pages_array(struct page **pages, int numpages,
 		enum page_cache_mode new_type)
