@@ -39,6 +39,13 @@
 #include <asm/ptrace.h>
 #include <asm/svm.h>
 
+static bool mem_protected;
+
+bool kvm_mem_protected(void)
+{
+	return mem_protected;
+}
+
 DEFINE_STATIC_KEY_FALSE(kvm_async_pf_enabled);
 
 static int kvmapf = 1;
@@ -749,6 +756,15 @@ static void __init kvm_init_platform(void)
 {
 	kvmclock_init();
 	x86_platform.apic_post_init = kvm_apic_init;
+
+	if (kvm_para_has_feature(KVM_FEATURE_MEM_PROTECTED)) {
+		if (kvm_hypercall0(KVM_HC_ENABLE_MEM_PROTECTED)) {
+			panic("Failed to enable KVM memory protection");
+		}
+
+		pr_info("KVM memory protection enabled\n");
+		mem_protected = true;
+	}
 }
 
 #if defined(CONFIG_AMD_MEM_ENCRYPT)
