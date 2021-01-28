@@ -692,8 +692,7 @@ cont:
 						     NULL,
 						     clear_flags,
 						     PAGE_UNLOCK |
-						     PAGE_CLEAR_DIRTY |
-						     PAGE_SET_WRITEBACK |
+						     PAGE_START_WRITEBACK |
 						     page_error_op |
 						     PAGE_END_WRITEBACK);
 
@@ -917,7 +916,6 @@ retry:
 						ins.objectid,
 						async_extent->ram_size,
 						ins.offset,
-						BTRFS_ORDERED_COMPRESSED,
 						async_extent->compress_type);
 		if (ret) {
 			btrfs_drop_extent_cache(inode, async_extent->start,
@@ -934,8 +932,7 @@ retry:
 				async_extent->start +
 				async_extent->ram_size - 1,
 				NULL, EXTENT_LOCKED | EXTENT_DELALLOC,
-				PAGE_UNLOCK | PAGE_CLEAR_DIRTY |
-				PAGE_SET_WRITEBACK);
+				PAGE_UNLOCK | PAGE_START_WRITEBACK);
 		if (btrfs_submit_compressed_write(inode, async_extent->start,
 				    async_extent->ram_size,
 				    ins.objectid,
@@ -971,9 +968,8 @@ out_free:
 				     NULL, EXTENT_LOCKED | EXTENT_DELALLOC |
 				     EXTENT_DELALLOC_NEW |
 				     EXTENT_DEFRAG | EXTENT_DO_ACCOUNTING,
-				     PAGE_UNLOCK | PAGE_CLEAR_DIRTY |
-				     PAGE_SET_WRITEBACK | PAGE_END_WRITEBACK |
-				     PAGE_SET_ERROR);
+				     PAGE_UNLOCK | PAGE_START_WRITEBACK |
+				     PAGE_END_WRITEBACK | PAGE_SET_ERROR);
 	free_async_extent_pages(async_extent);
 	kfree(async_extent);
 	goto again;
@@ -1071,8 +1067,7 @@ static noinline int cow_file_range(struct btrfs_inode *inode,
 				     EXTENT_LOCKED | EXTENT_DELALLOC |
 				     EXTENT_DELALLOC_NEW | EXTENT_DEFRAG |
 				     EXTENT_DO_ACCOUNTING, PAGE_UNLOCK |
-				     PAGE_CLEAR_DIRTY | PAGE_SET_WRITEBACK |
-				     PAGE_END_WRITEBACK);
+				     PAGE_START_WRITEBACK | PAGE_END_WRITEBACK);
 			*nr_written = *nr_written +
 			     (end - start + PAGE_SIZE) / PAGE_SIZE;
 			*page_started = 1;
@@ -1127,7 +1122,8 @@ static noinline int cow_file_range(struct btrfs_inode *inode,
 		free_extent_map(em);
 
 		ret = btrfs_add_ordered_extent(inode, start, ins.objectid,
-					       ram_size, cur_alloc_size, 0);
+					       ram_size, cur_alloc_size,
+					       BTRFS_ORDERED_REGULAR);
 		if (ret)
 			goto out_drop_extent_cache;
 
@@ -1194,8 +1190,7 @@ out_reserve:
 out_unlock:
 	clear_bits = EXTENT_LOCKED | EXTENT_DELALLOC | EXTENT_DELALLOC_NEW |
 		EXTENT_DEFRAG | EXTENT_CLEAR_META_RESV;
-	page_ops = PAGE_UNLOCK | PAGE_CLEAR_DIRTY | PAGE_SET_WRITEBACK |
-		PAGE_END_WRITEBACK;
+	page_ops = PAGE_UNLOCK | PAGE_START_WRITEBACK | PAGE_END_WRITEBACK;
 	/*
 	 * If we reserved an extent for our delalloc range (or a subrange) and
 	 * failed to create the respective ordered extent, then it means that
@@ -1320,9 +1315,8 @@ static int cow_file_range_async(struct btrfs_inode *inode,
 		unsigned clear_bits = EXTENT_LOCKED | EXTENT_DELALLOC |
 			EXTENT_DELALLOC_NEW | EXTENT_DEFRAG |
 			EXTENT_DO_ACCOUNTING;
-		unsigned long page_ops = PAGE_UNLOCK | PAGE_CLEAR_DIRTY |
-			PAGE_SET_WRITEBACK | PAGE_END_WRITEBACK |
-			PAGE_SET_ERROR;
+		unsigned long page_ops = PAGE_UNLOCK | PAGE_START_WRITEBACK |
+					 PAGE_END_WRITEBACK | PAGE_SET_ERROR;
 
 		extent_clear_unlock_delalloc(inode, start, end, locked_page,
 					     clear_bits, page_ops);
@@ -1519,8 +1513,7 @@ static noinline int run_delalloc_nocow(struct btrfs_inode *inode,
 					     EXTENT_LOCKED | EXTENT_DELALLOC |
 					     EXTENT_DO_ACCOUNTING |
 					     EXTENT_DEFRAG, PAGE_UNLOCK |
-					     PAGE_CLEAR_DIRTY |
-					     PAGE_SET_WRITEBACK |
+					     PAGE_START_WRITEBACK |
 					     PAGE_END_WRITEBACK);
 		return -ENOMEM;
 	}
@@ -1842,8 +1835,7 @@ error:
 					     locked_page, EXTENT_LOCKED |
 					     EXTENT_DELALLOC | EXTENT_DEFRAG |
 					     EXTENT_DO_ACCOUNTING, PAGE_UNLOCK |
-					     PAGE_CLEAR_DIRTY |
-					     PAGE_SET_WRITEBACK |
+					     PAGE_START_WRITEBACK |
 					     PAGE_END_WRITEBACK);
 	btrfs_free_path(path);
 	return ret;
@@ -3103,14 +3095,16 @@ void btrfs_run_delayed_iputs(struct btrfs_fs_info *fs_info)
 }
 
 /**
- * btrfs_wait_on_delayed_iputs - wait on the delayed iputs to be done running
- * @fs_info - the fs_info for this fs
- * @return - EINTR if we were killed, 0 if nothing's pending
+ * Wait for flushing all delayed iputs
+ *
+ * @fs_info:  the filesystem
  *
  * This will wait on any delayed iputs that are currently running with KILLABLE
  * set.  Once they are all done running we will return, unless we are killed in
  * which case we return EINTR. This helps in user operations like fallocate etc
  * that might get blocked on the iputs.
+ *
+ * Return EINTR if we were killed, 0 if nothing's pending
  */
 int btrfs_wait_on_delayed_iputs(struct btrfs_fs_info *fs_info)
 {
@@ -4720,6 +4714,9 @@ again:
 		ret = -ENOMEM;
 		goto out;
 	}
+	ret = set_page_extent_mapped(page);
+	if (ret < 0)
+		goto out_unlock;
 
 	if (!PageUptodate(page)) {
 		ret = btrfs_readpage(NULL, page);
@@ -4737,7 +4734,6 @@ again:
 	wait_on_page_writeback(page);
 
 	lock_extent_bits(io_tree, block_start, block_end, &cached_state);
-	set_page_extent_mapped(page);
 
 	ordered = btrfs_lookup_ordered_extent(inode, block_start);
 	if (ordered) {
@@ -5045,7 +5041,8 @@ static int btrfs_setsize(struct inode *inode, struct iattr *attr)
 	return ret;
 }
 
-static int btrfs_setattr(struct dentry *dentry, struct iattr *attr)
+static int btrfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+			 struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
 	struct btrfs_root *root = BTRFS_I(inode)->root;
@@ -5054,7 +5051,7 @@ static int btrfs_setattr(struct dentry *dentry, struct iattr *attr)
 	if (btrfs_root_readonly(root))
 		return -EROFS;
 
-	err = setattr_prepare(dentry, attr);
+	err = setattr_prepare(&init_user_ns, dentry, attr);
 	if (err)
 		return err;
 
@@ -5065,12 +5062,13 @@ static int btrfs_setattr(struct dentry *dentry, struct iattr *attr)
 	}
 
 	if (attr->ia_valid) {
-		setattr_copy(inode, attr);
+		setattr_copy(&init_user_ns, inode, attr);
 		inode_inc_iversion(inode);
 		err = btrfs_dirty_inode(inode);
 
 		if (!err && attr->ia_valid & ATTR_MODE)
-			err = posix_acl_chmod(inode, inode->i_mode);
+			err = posix_acl_chmod(&init_user_ns, inode,
+					      inode->i_mode);
 	}
 
 	return err;
@@ -6190,7 +6188,7 @@ static struct inode *btrfs_new_inode(struct btrfs_trans_handle *trans,
 	if (ret != 0)
 		goto fail_unlock;
 
-	inode_init_owner(inode, dir, mode);
+	inode_init_owner(&init_user_ns, inode, dir, mode);
 	inode_set_bytes(inode, 0);
 
 	inode->i_mtime = current_time(inode);
@@ -6351,8 +6349,8 @@ static int btrfs_add_nondir(struct btrfs_trans_handle *trans,
 	return err;
 }
 
-static int btrfs_mknod(struct inode *dir, struct dentry *dentry,
-			umode_t mode, dev_t rdev)
+static int btrfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
+		       struct dentry *dentry, umode_t mode, dev_t rdev)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(dir->i_sb);
 	struct btrfs_trans_handle *trans;
@@ -6371,7 +6369,7 @@ static int btrfs_mknod(struct inode *dir, struct dentry *dentry,
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	err = btrfs_find_free_objectid(root, &objectid);
+	err = btrfs_get_free_objectid(root, &objectid);
 	if (err)
 		goto out_unlock;
 
@@ -6415,8 +6413,8 @@ out_unlock:
 	return err;
 }
 
-static int btrfs_create(struct inode *dir, struct dentry *dentry,
-			umode_t mode, bool excl)
+static int btrfs_create(struct user_namespace *mnt_userns, struct inode *dir,
+			struct dentry *dentry, umode_t mode, bool excl)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(dir->i_sb);
 	struct btrfs_trans_handle *trans;
@@ -6435,7 +6433,7 @@ static int btrfs_create(struct inode *dir, struct dentry *dentry,
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	err = btrfs_find_free_objectid(root, &objectid);
+	err = btrfs_get_free_objectid(root, &objectid);
 	if (err)
 		goto out_unlock;
 
@@ -6560,7 +6558,8 @@ fail:
 	return err;
 }
 
-static int btrfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+static int btrfs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
+		       struct dentry *dentry, umode_t mode)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(dir->i_sb);
 	struct inode *inode = NULL;
@@ -6579,7 +6578,7 @@ static int btrfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	err = btrfs_find_free_objectid(root, &objectid);
+	err = btrfs_get_free_objectid(root, &objectid);
 	if (err)
 		goto out_fail;
 
@@ -7797,10 +7796,8 @@ static void __endio_write_update_ordered(struct btrfs_inode *inode,
 					NULL);
 			btrfs_queue_work(wq, &ordered->work);
 		}
-		/*
-		 * If btrfs_dec_test_ordered_pending does not find any ordered
-		 * extent in the range, we can exit.
-		 */
+
+		/* No ordered extent found in the range, exit */
 		if (ordered_offset == last_offset)
 			return;
 		/*
@@ -8117,7 +8114,7 @@ static int __btrfs_releasepage(struct page *page, gfp_t gfp_flags)
 {
 	int ret = try_release_extent_mapping(page, gfp_flags);
 	if (ret == 1)
-		detach_page_private(page);
+		clear_page_extent_mapped(page);
 	return ret;
 }
 
@@ -8276,7 +8273,7 @@ again:
 	}
 
 	ClearPageChecked(page);
-	detach_page_private(page);
+	clear_page_extent_mapped(page);
 }
 
 /*
@@ -8355,7 +8352,9 @@ again:
 	wait_on_page_writeback(page);
 
 	lock_extent_bits(io_tree, page_start, page_end, &cached_state);
-	set_page_extent_mapped(page);
+	ret2 = set_page_extent_mapped(page);
+	if (ret2 < 0)
+		goto out_unlock;
 
 	/*
 	 * we can't set the delalloc bits if there are pending ordered
@@ -8592,15 +8591,18 @@ out:
  */
 int btrfs_create_subvol_root(struct btrfs_trans_handle *trans,
 			     struct btrfs_root *new_root,
-			     struct btrfs_root *parent_root,
-			     u64 new_dirid)
+			     struct btrfs_root *parent_root)
 {
 	struct inode *inode;
 	int err;
 	u64 index = 0;
+	u64 ino;
 
-	inode = btrfs_new_inode(trans, new_root, NULL, "..", 2,
-				new_dirid, new_dirid,
+	err = btrfs_get_free_objectid(new_root, &ino);
+	if (err < 0)
+		return err;
+
+	inode = btrfs_new_inode(trans, new_root, NULL, "..", 2, ino, ino,
 				S_IFDIR | (~current_umask() & S_IRWXUGO),
 				&index);
 	if (IS_ERR(inode))
@@ -8815,7 +8817,8 @@ fail:
 	return -ENOMEM;
 }
 
-static int btrfs_getattr(const struct path *path, struct kstat *stat,
+static int btrfs_getattr(struct user_namespace *mnt_userns,
+			 const struct path *path, struct kstat *stat,
 			 u32 request_mask, unsigned int flags)
 {
 	u64 delalloc_bytes;
@@ -8841,7 +8844,7 @@ static int btrfs_getattr(const struct path *path, struct kstat *stat,
 				  STATX_ATTR_IMMUTABLE |
 				  STATX_ATTR_NODUMP);
 
-	generic_fillattr(inode, stat);
+	generic_fillattr(&init_user_ns, inode, stat);
 	stat->dev = BTRFS_I(inode)->root->anon_dev;
 
 	spin_lock(&BTRFS_I(inode)->lock);
@@ -9079,7 +9082,7 @@ static int btrfs_whiteout_for_rename(struct btrfs_trans_handle *trans,
 	u64 objectid;
 	u64 index;
 
-	ret = btrfs_find_free_objectid(root, &objectid);
+	ret = btrfs_get_free_objectid(root, &objectid);
 	if (ret)
 		return ret;
 
@@ -9332,9 +9335,9 @@ out_notrans:
 	return ret;
 }
 
-static int btrfs_rename2(struct inode *old_dir, struct dentry *old_dentry,
-			 struct inode *new_dir, struct dentry *new_dentry,
-			 unsigned int flags)
+static int btrfs_rename2(struct user_namespace *mnt_userns, struct inode *old_dir,
+			 struct dentry *old_dentry, struct inode *new_dir,
+			 struct dentry *new_dentry, unsigned int flags)
 {
 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT))
 		return -EINVAL;
@@ -9486,11 +9489,11 @@ int btrfs_start_delalloc_snapshot(struct btrfs_root *root)
 	return start_delalloc_inodes(root, &wbc, true, false);
 }
 
-int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, u64 nr,
+int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, long nr,
 			       bool in_reclaim_context)
 {
 	struct writeback_control wbc = {
-		.nr_to_write = (nr == U64_MAX) ? LONG_MAX : (unsigned long)nr,
+		.nr_to_write = nr,
 		.sync_mode = WB_SYNC_NONE,
 		.range_start = 0,
 		.range_end = LLONG_MAX,
@@ -9507,12 +9510,12 @@ int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, u64 nr,
 	mutex_lock(&fs_info->delalloc_root_mutex);
 	spin_lock(&fs_info->delalloc_root_lock);
 	list_splice_init(&fs_info->delalloc_roots, &splice);
-	while (!list_empty(&splice) && nr) {
+	while (!list_empty(&splice)) {
 		/*
 		 * Reset nr_to_write here so we know that we're doing a full
 		 * flush.
 		 */
-		if (nr == U64_MAX)
+		if (nr == LONG_MAX)
 			wbc.nr_to_write = LONG_MAX;
 
 		root = list_first_entry(&splice, struct btrfs_root,
@@ -9542,8 +9545,8 @@ out:
 	return ret;
 }
 
-static int btrfs_symlink(struct inode *dir, struct dentry *dentry,
-			 const char *symname)
+static int btrfs_symlink(struct user_namespace *mnt_userns, struct inode *dir,
+			 struct dentry *dentry, const char *symname)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(dir->i_sb);
 	struct btrfs_trans_handle *trans;
@@ -9575,7 +9578,7 @@ static int btrfs_symlink(struct inode *dir, struct dentry *dentry,
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	err = btrfs_find_free_objectid(root, &objectid);
+	err = btrfs_get_free_objectid(root, &objectid);
 	if (err)
 		goto out_unlock;
 
@@ -9877,7 +9880,8 @@ static int btrfs_set_page_dirty(struct page *page)
 	return __set_page_dirty_nobuffers(page);
 }
 
-static int btrfs_permission(struct inode *inode, int mask)
+static int btrfs_permission(struct user_namespace *mnt_userns,
+			    struct inode *inode, int mask)
 {
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	umode_t mode = inode->i_mode;
@@ -9889,10 +9893,11 @@ static int btrfs_permission(struct inode *inode, int mask)
 		if (BTRFS_I(inode)->flags & BTRFS_INODE_READONLY)
 			return -EACCES;
 	}
-	return generic_permission(inode, mask);
+	return generic_permission(&init_user_ns, inode, mask);
 }
 
-static int btrfs_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
+static int btrfs_tmpfile(struct user_namespace *mnt_userns, struct inode *dir,
+			 struct dentry *dentry, umode_t mode)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(dir->i_sb);
 	struct btrfs_trans_handle *trans;
@@ -9909,7 +9914,7 @@ static int btrfs_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	ret = btrfs_find_free_objectid(root, &objectid);
+	ret = btrfs_get_free_objectid(root, &objectid);
 	if (ret)
 		goto out;
 

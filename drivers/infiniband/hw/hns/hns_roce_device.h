@@ -119,6 +119,9 @@
 #define SRQ_DB_REG				0x230
 
 #define HNS_ROCE_QP_BANK_NUM 8
+#define HNS_ROCE_CQ_BANK_NUM 4
+
+#define CQ_BANKID_SHIFT 2
 
 /* The chip implementation of the consumer index is calculated
  * according to twice the actual EQ depth
@@ -532,13 +535,14 @@ struct hns_roce_qp_table {
 	struct hns_roce_hem_table	sccc_table;
 	struct mutex			scc_mutex;
 	struct hns_roce_bank bank[HNS_ROCE_QP_BANK_NUM];
-	spinlock_t bank_lock;
+	struct mutex bank_mutex;
 };
 
 struct hns_roce_cq_table {
-	struct hns_roce_bitmap		bitmap;
 	struct xarray			array;
 	struct hns_roce_hem_table	table;
+	struct hns_roce_bank bank[HNS_ROCE_CQ_BANK_NUM];
+	struct mutex			bank_mutex;
 };
 
 struct hns_roce_srq_table {
@@ -779,7 +783,7 @@ struct hns_roce_caps {
 	u32		max_cqes;
 	u32		min_cqes;
 	u32		min_wqes;
-	int		reserved_cqs;
+	u32		reserved_cqs;
 	int		reserved_srqs;
 	int		num_aeq_vectors;
 	int		num_comp_vectors;
@@ -1164,7 +1168,7 @@ int hns_roce_mtr_map(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 
 int hns_roce_init_pd_table(struct hns_roce_dev *hr_dev);
 int hns_roce_init_mr_table(struct hns_roce_dev *hr_dev);
-int hns_roce_init_cq_table(struct hns_roce_dev *hr_dev);
+void hns_roce_init_cq_table(struct hns_roce_dev *hr_dev);
 int hns_roce_init_qp_table(struct hns_roce_dev *hr_dev);
 int hns_roce_init_srq_table(struct hns_roce_dev *hr_dev);
 

@@ -437,6 +437,7 @@ static void vc4_write_ppf(struct vc4_plane_state *vc4_state, u32 src, u32 dst)
 static u32 vc4_lbm_size(struct drm_plane_state *state)
 {
 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
+	struct vc4_dev *vc4 = to_vc4_dev(state->plane->dev);
 	u32 pix_per_line;
 	u32 lbm;
 
@@ -472,7 +473,11 @@ static u32 vc4_lbm_size(struct drm_plane_state *state)
 		lbm = pix_per_line * 16;
 	}
 
-	lbm = roundup(lbm, 32);
+	/* Align it to 64 or 128 (hvs5) bytes */
+	lbm = roundup(lbm, vc4->hvs->hvs5 ? 128 : 64);
+
+	/* Each "word" of the LBM memory contains 2 or 4 (hvs5) pixels */
+	lbm /= vc4->hvs->hvs5 ? 4 : 2;
 
 	return lbm;
 }
@@ -912,9 +917,9 @@ static int vc4_plane_mode_set(struct drm_plane *plane,
 		if (!vc4_state->is_unity) {
 			vc4_dlist_write(vc4_state,
 					VC4_SET_FIELD(vc4_state->crtc_w,
-						      SCALER_POS1_SCL_WIDTH) |
+						      SCALER5_POS1_SCL_WIDTH) |
 					VC4_SET_FIELD(vc4_state->crtc_h,
-						      SCALER_POS1_SCL_HEIGHT));
+						      SCALER5_POS1_SCL_HEIGHT));
 		}
 
 		/* Position Word 2: Source Image Size */
@@ -1268,11 +1273,6 @@ static const struct drm_plane_helper_funcs vc4_plane_helper_funcs = {
 	.atomic_async_update = vc4_plane_atomic_async_update,
 };
 
-static void vc4_plane_destroy(struct drm_plane *plane)
-{
-	drm_plane_cleanup(plane);
-}
-
 static bool vc4_format_mod_supported(struct drm_plane *plane,
 				     uint32_t format,
 				     uint64_t modifier)
@@ -1323,7 +1323,7 @@ static bool vc4_format_mod_supported(struct drm_plane *plane,
 static const struct drm_plane_funcs vc4_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = vc4_plane_destroy,
+	.destroy = drm_plane_cleanup,
 	.set_property = NULL,
 	.reset = vc4_plane_reset,
 	.atomic_duplicate_state = vc4_plane_duplicate_state,

@@ -1656,11 +1656,20 @@ static const struct super_operations ext4_sops = {
 	.bdev_try_to_free_page = bdev_try_to_free_page,
 };
 
+static u64 ext4_fetch_iversion(struct inode *inode)
+{
+	if (IS_I_VERSION(inode))
+		return generic_fetch_iversion(inode);
+	else
+		return time_to_chattr(&inode->i_ctime);
+}
+
 static const struct export_operations ext4_export_ops = {
 	.fh_to_dentry = ext4_fh_to_dentry,
 	.fh_to_parent = ext4_fh_to_parent,
 	.get_parent = ext4_get_parent,
 	.commit_metadata = ext4_nfs_commit_metadata,
+	.fetch_iversion = ext4_fetch_iversion,
 };
 
 enum {
@@ -6654,7 +6663,7 @@ static struct file_system_type ext4_fs_type = {
 	.name		= "ext4",
 	.mount		= ext4_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_ALLOW_IDMAP,
 };
 MODULE_ALIAS_FS("ext4");
 
