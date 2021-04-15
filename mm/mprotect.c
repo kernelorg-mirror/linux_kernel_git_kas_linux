@@ -484,8 +484,12 @@ success:
 	dirty_accountable = vma_wants_writenotify(vma, vma->vm_page_prot);
 	vma_set_page_prot(vma);
 
-	change_protection(vma, start, end, vma->vm_page_prot,
-			  dirty_accountable ? MM_CP_DIRTY_ACCT : 0);
+	if (vma->vm_flags & VM_GUEST) {
+		zap_page_range(vma, vma->vm_start, vma->vm_end - vma->vm_start);
+	} else {
+		change_protection(vma, start, end, vma->vm_page_prot,
+				  dirty_accountable ? MM_CP_DIRTY_ACCT : 0);
+	}
 
 	/*
 	 * Private VM_LOCKED VMA becoming writable: trigger COW to avoid major
@@ -600,6 +604,16 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 		/* newflags >> 4 shift VM_MAY% in place of VM_% */
 		if ((newflags & ~(newflags >> 4)) & VM_ACCESS_FLAGS) {
 			error = -EACCES;
+			goto out;
+		}
+
+		if ((newflags & (VM_GUEST|VM_SHARED)) == VM_GUEST) {
+			error = -EINVAL;
+			goto out;
+		}
+
+		if ((newflags & VM_GUEST) && !vma_is_shmem(vma)) {
+			error = -EINVAL;
 			goto out;
 		}
 

@@ -436,6 +436,14 @@ PAGEFLAG_FALSE(HWPoison)
 #define __PG_HWPOISON 0
 #endif
 
+#if defined(CONFIG_64BIT) && defined(CONFIG_HAVE_KVM_PROTECTED_MEMORY)
+PAGEFLAG(Guest, arch_2, PF_HEAD)
+TESTSCFLAG(Guest, arch_2, PF_HEAD)
+#else
+PAGEFLAG_FALSE(Guest)
+TESTSCFLAG_FALSE(Guest)
+#endif
+
 #if defined(CONFIG_IDLE_PAGE_TRACKING) && defined(CONFIG_64BIT)
 TESTPAGEFLAG(Young, young, PF_ANY)
 SETPAGEFLAG(Young, young, PF_ANY)

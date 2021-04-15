@@ -1835,6 +1835,11 @@ repeat:
 	if (page && sgp == SGP_WRITE)
 		mark_page_accessed(page);
 
+	if (page && PageGuest(page) && sgp != SGP_CACHE) {
+		error = -EIO;
+		goto unlock;
+	}
+
 	/* fallocated page? */
 	if (page && !PageUptodate(page)) {
 		if (sgp != SGP_READ)
@@ -2117,6 +2122,13 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 				  gfp, vma, vmf, &ret);
 	if (err)
 		return vmf_error(err);
+
+	if ((vmf->vma->vm_flags & VM_GUEST) && !TestSetPageGuest(vmf->page)) {
+		struct page *head = compound_head(vmf->page);
+		try_to_unmap(head, TTU_IGNORE_MLOCK);
+		set_page_dirty(head);
+	}
+
 	return ret;
 }
 

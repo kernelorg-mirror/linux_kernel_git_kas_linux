@@ -356,10 +356,22 @@ static int follow_pfn_pte(struct vm_area_struct *vma, unsigned long address,
  * FOLL_FORCE can write to even unwritable pte's, but only
  * after we've gone through a COW cycle and they are dirty.
  */
-static inline bool can_follow_write_pte(pte_t pte, unsigned int flags)
+static inline bool can_follow_write_pte(struct vm_area_struct *vma,
+					pte_t pte, unsigned int flags)
 {
-	return pte_write(pte) ||
-		((flags & FOLL_FORCE) && (flags & FOLL_COW) && pte_dirty(pte));
+	if (pte_write(pte))
+		return true;
+
+	if ((flags & FOLL_FORCE) && (flags & FOLL_COW) && pte_dirty(pte))
+		return true;
+
+	if (!(flags & FOLL_GUEST))
+		return false;
+
+	if ((vma->vm_flags & (VM_WRITE | VM_SHARED)) != (VM_WRITE | VM_SHARED))
+		return false;
+
+	return PageGuest(pte_page(pte));
 }
 
 static struct page *follow_page_pte(struct vm_area_struct *vma,
@@ -400,14 +412,20 @@ retry:
 		migration_entry_wait(mm, pmd, address);
 		goto retry;
 	}
-	if ((flags & FOLL_NUMA) && pte_protnone(pte))
+
+	page = vm_normal_page(vma, address, pte);
+	if (page && PageGuest(page)) {
+		if (!(flags & FOLL_GUEST))
+			goto no_page;
+	} else if ((flags & FOLL_NUMA) && pte_protnone(pte)) {
 		goto no_page;
-	if ((flags & FOLL_WRITE) && !can_follow_write_pte(pte, flags)) {
+	}
+
+	if ((flags & FOLL_WRITE) && !can_follow_write_pte(vma, pte, flags)) {
 		pte_unmap_unlock(ptep, ptl);
 		return NULL;
 	}
 
-	page = vm_normal_page(vma, address, pte);
 	if (!page && pte_devmap(pte) && (flags & (FOLL_GET | FOLL_PIN))) {
 		/*
 		 * Only return device mapping pages in the FOLL_GET or FOLL_PIN
@@ -571,8 +589,12 @@ retry:
 	if (likely(!pmd_trans_huge(pmdval)))
 		return follow_page_pte(vma, address, pmd, flags, &ctx->pgmap);
 
-	if ((flags & FOLL_NUMA) && pmd_protnone(pmdval))
+	if (PageGuest(pmd_page(pmdval))) {
+	    if (!(flags & FOLL_GUEST))
+		    return no_page_table(vma, flags);
+	}  else if ((flags & FOLL_NUMA) && pmd_protnone(pmdval)) {
 		return no_page_table(vma, flags);
+	}
 
 retry_locked:
 	ptl = pmd_lock(mm, pmd);

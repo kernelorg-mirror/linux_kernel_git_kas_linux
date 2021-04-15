@@ -3703,9 +3703,13 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 	for (i = 0; i < HPAGE_PMD_NR; i++)
 		flush_icache_page(vma, page + i);
 
-	entry = mk_huge_pmd(page, vma->vm_page_prot);
-	if (write)
-		entry = maybe_pmd_mkwrite(pmd_mkdirty(entry), vma);
+	if (PageGuest(page)) {
+		entry = mk_huge_pmd(page, PAGE_NONE);
+	} else {
+		entry = mk_huge_pmd(page, vma->vm_page_prot);
+		if (write)
+			entry = maybe_pmd_mkwrite(pmd_mkdirty(entry), vma);
+	}
 
 	add_mm_counter(vma->vm_mm, mm_counter_file(page), HPAGE_PMD_NR);
 	page_add_file_rmap(page, true);
@@ -3741,13 +3745,17 @@ void do_set_pte(struct vm_fault *vmf, struct page *page, unsigned long addr)
 	pte_t entry;
 
 	flush_icache_page(vma, page);
-	entry = mk_pte(page, vma->vm_page_prot);
+	if (PageGuest(page)) {
+		entry = mk_pte(page, PAGE_NONE);
+	} else {
+		entry = mk_pte(page, vma->vm_page_prot);
 
-	if (prefault && arch_wants_old_prefaulted_pte())
-		entry = pte_mkold(entry);
+		if (prefault && arch_wants_old_prefaulted_pte())
+			entry = pte_mkold(entry);
 
-	if (write)
-		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		if (write)
+			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+	}
 	/* copy-on-write page */
 	if (write && !(vma->vm_flags & VM_SHARED)) {
 		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
@@ -4104,6 +4112,10 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	pte_t pte, old_pte;
 	bool was_writable = pte_savedwrite(vmf->orig_pte);
 	int flags = 0;
+
+	page = pte_page(vmf->orig_pte);
+	if (PageGuest(page))
+		return VM_FAULT_SIGBUS;
 
 	/*
 	 * The "pte" at this point cannot be used safely without

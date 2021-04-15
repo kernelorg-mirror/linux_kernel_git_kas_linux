@@ -1336,10 +1336,22 @@ fallback:
  * FOLL_FORCE can write to even unwritable pmd's, but only
  * after we've gone through a COW cycle and they are dirty.
  */
-static inline bool can_follow_write_pmd(pmd_t pmd, unsigned int flags)
+static inline bool can_follow_write_pmd(struct vm_area_struct *vma,
+					pmd_t pmd, unsigned int flags)
 {
-	return pmd_write(pmd) ||
-	       ((flags & FOLL_FORCE) && (flags & FOLL_COW) && pmd_dirty(pmd));
+	if (pmd_write(pmd))
+		return true;
+
+	if ((flags & FOLL_FORCE) && (flags & FOLL_COW) && pmd_dirty(pmd))
+		return true;
+
+	if (!(flags & FOLL_GUEST))
+		return false;
+
+	if ((vma->vm_flags & (VM_WRITE | VM_SHARED)) != (VM_WRITE | VM_SHARED))
+		return false;
+
+	return PageGuest(pmd_page(pmd));
 }
 
 struct page *follow_trans_huge_pmd(struct vm_area_struct *vma,
@@ -1352,19 +1364,29 @@ struct page *follow_trans_huge_pmd(struct vm_area_struct *vma,
 
 	assert_spin_locked(pmd_lockptr(mm, pmd));
 
-	if (flags & FOLL_WRITE && !can_follow_write_pmd(*pmd, flags))
-		goto out;
+	if (!pmd_present(*pmd))
+		return NULL;
+
+	page = pmd_page(*pmd);
+	VM_BUG_ON_PAGE(!PageHead(page) && !is_zone_device_page(page), page);
+
+	if (PageGuest(page)) {
+		if (!(flags & FOLL_GUEST))
+			return NULL;
+	} else if ((flags & FOLL_NUMA) && pmd_protnone(*pmd)) {
+		/*
+		 * Full NUMA hinting faults to serialise migration in fault
+		 * paths
+		 */
+		return NULL;
+	}
+
+	if (flags & FOLL_WRITE && !can_follow_write_pmd(vma, *pmd, flags))
+		return NULL;
 
 	/* Avoid dumping huge zero page */
 	if ((flags & FOLL_DUMP) && is_huge_zero_pmd(*pmd))
 		return ERR_PTR(-EFAULT);
-
-	/* Full NUMA hinting faults to serialise migration in fault paths */
-	if ((flags & FOLL_NUMA) && pmd_protnone(*pmd))
-		goto out;
-
-	page = pmd_page(*pmd);
-	VM_BUG_ON_PAGE(!PageHead(page) && !is_zone_device_page(page), page);
 
 	if (!try_grab_page(page, flags))
 		return ERR_PTR(-ENOMEM);
@@ -1408,7 +1430,6 @@ skip_mlock:
 	page += (addr & ~HPAGE_PMD_MASK) >> PAGE_SHIFT;
 	VM_BUG_ON_PAGE(!PageCompound(page) && !is_zone_device_page(page), page);
 
-out:
 	return page;
 }
 
@@ -1425,6 +1446,10 @@ vm_fault_t do_huge_pmd_numa_page(struct vm_fault *vmf, pmd_t pmd)
 	bool migrated = false;
 	bool was_writable;
 	int flags = 0;
+
+	page = pmd_page(pmd);
+	if (PageGuest(page))
+		return VM_FAULT_SIGBUS;
 
 	vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
 	if (unlikely(!pmd_same(pmd, *vmf->pmd)))

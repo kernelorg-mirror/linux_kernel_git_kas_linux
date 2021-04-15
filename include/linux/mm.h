@@ -362,6 +362,8 @@ extern unsigned int kobjsize(const void *objp);
 # define VM_GROWSUP	VM_NONE
 #endif
 
+#define VM_GUEST	VM_HIGH_ARCH_4
+
 /* Bits set in the VMA until the stack is in its final location */
 #define VM_STACK_INCOMPLETE_SETUP	(VM_RAND_READ | VM_SEQ_READ)
 
@@ -413,7 +415,7 @@ extern unsigned int kobjsize(const void *objp);
 #ifndef VM_ARCH_CLEAR
 # define VM_ARCH_CLEAR	VM_NONE
 #endif
-#define VM_FLAGS_CLEAR	(ARCH_VM_PKEY_FLAGS | VM_ARCH_CLEAR)
+#define VM_FLAGS_CLEAR	(ARCH_VM_PKEY_FLAGS | VM_GUEST | VM_ARCH_CLEAR)
 
 /*
  * mapping from the currently active vm_flags protection bits (the
@@ -2793,6 +2795,7 @@ struct page *follow_page(struct vm_area_struct *vma, unsigned long address,
 #define FOLL_SPLIT_PMD	0x20000	/* split huge pmd before returning */
 #define FOLL_PIN	0x40000	/* pages must be released via unpin_user_page */
 #define FOLL_FAST_ONLY	0x80000	/* gup_fast: prevent fall-back to slow gup */
+#define FOLL_GUEST	0x100000 /* allow access to guest-only pages */
 
 /*
  * FOLL_PIN and FOLL_LONGTERM may be used in various combinations with each
