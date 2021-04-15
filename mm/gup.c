@@ -384,22 +384,29 @@ retry:
 	ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
 	pte = *ptep;
 	if (!pte_present(pte)) {
-		swp_entry_t entry;
+		swp_entry_t entry = pte_to_swp_entry(pte);
+
+		if (pte_none(pte))
+			goto no_page;
+
 		/*
 		 * KSM's break_ksm() relies upon recognizing a ksm page
 		 * even while it is being migrated, so for that case we
 		 * need migration_entry_wait().
 		 */
-		if (likely(!(flags & FOLL_MIGRATION)))
-			goto no_page;
-		if (pte_none(pte))
-			goto no_page;
-		entry = pte_to_swp_entry(pte);
-		if (!is_migration_entry(entry))
-			goto no_page;
-		pte_unmap_unlock(ptep, ptl);
-		migration_entry_wait(mm, pmd, address);
-		goto retry;
+		if (is_migration_entry(entry) && (flags & FOLL_MIGRATION)) {
+			pte_unmap_unlock(ptep, ptl);
+			migration_entry_wait(mm, pmd, address);
+			goto retry;
+		}
+
+		if (is_hwpoison_entry(entry) && (flags & FOLL_ALLOW_POISONED)) {
+			page = hwpoison_entry_to_page(entry);
+			get_page(page);
+			goto out;
+		}
+
+		goto no_page;
 	}
 	if ((flags & FOLL_NUMA) && pte_protnone(pte))
 		goto no_page;

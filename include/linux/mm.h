@@ -2802,6 +2802,7 @@ struct page *follow_page(struct vm_area_struct *vma, unsigned long address,
 #define FOLL_SPLIT_PMD	0x20000	/* split huge pmd before returning */
 #define FOLL_PIN	0x40000	/* pages must be released via unpin_user_page */
 #define FOLL_FAST_ONLY	0x80000	/* gup_fast: prevent fall-back to slow gup */
+#define FOLL_ALLOW_POISONED 0x100000 /* bypass poison check */
 
 /*
  * FOLL_PIN and FOLL_LONGTERM may be used in various combinations with each
