@@ -1832,6 +1832,13 @@ repeat:
 
 	if (page)
 		hindex = page->index;
+
+	if (page && PageHWPoison(page)) {
+		unlock_page(page);
+		put_page(page);
+		return -EIO;
+	}
+
 	if (page && sgp == SGP_WRITE)
 		mark_page_accessed(page);
 
