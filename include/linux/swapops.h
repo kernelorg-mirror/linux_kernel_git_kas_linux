@@ -323,6 +323,16 @@ static inline int is_hwpoison_entry(swp_entry_t entry)
 	return swp_type(entry) == SWP_HWPOISON;
 }
 
+static inline unsigned long hwpoison_entry_to_pfn(swp_entry_t entry)
+{
+	return swp_offset(entry);
+}
+
+static inline struct page *hwpoison_entry_to_page(swp_entry_t entry)
+{
+	return pfn_to_page(hwpoison_entry_to_pfn(entry));
+}
+
 static inline void num_poisoned_pages_inc(void)
 {
 	atomic_long_inc(&num_poisoned_pages);
@@ -343,6 +353,16 @@ static inline swp_entry_t make_hwpoison_entry(struct page *page)
 static inline int is_hwpoison_entry(swp_entry_t swp)
 {
 	return 0;
+}
+
+static inline unsigned long hwpoison_entry_to_pfn(swp_entry_t entry)
+{
+	return 0;
+}
+
+static inline struct page *hwpoison_entry_to_page(swp_entry_t entry)
+{
+	return NULL;
 }
 
 static inline void num_poisoned_pages_inc(void)
