@@ -3280,7 +3280,43 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			vmf->page = device_private_entry_to_page(entry);
 			ret = vmf->page->pgmap->ops->migrate_to_ram(vmf);
 		} else if (is_hwpoison_entry(entry)) {
-			ret = VM_FAULT_HWPOISON;
+			page = hwpoison_entry_to_page(entry);
+
+			locked = lock_page_or_retry(page, vma->vm_mm, vmf->flags);
+			if (!locked) {
+				ret = VM_FAULT_RETRY;
+				goto out;
+			}
+
+			vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
+						       vmf->address, &vmf->ptl);
+
+			if (unlikely(!pte_same(*vmf->pte, vmf->orig_pte))) {
+				ret = 0;
+			} else if (PageHWPoison(page)) {
+				ret = VM_FAULT_HWPOISON;
+			} else {
+				/*
+				 * The page is unpoisoned. Replace hwpoison
+				 * entry with a present PTE.
+				 */
+
+				inc_mm_counter(vma->vm_mm, mm_counter(page));
+				pte = mk_pte(page, vma->vm_page_prot);
+
+				if (PageAnon(page)) {
+					page_add_anon_rmap(page, vma,
+							   vmf->address, false);
+				} else {
+					page_add_file_rmap(page, false);
+				}
+
+				set_pte_at(vma->vm_mm, vmf->address,
+					   vmf->pte, pte);
+			}
+
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			unlock_page(page);
 		} else {
 			print_bad_pte(vma, vmf->address, vmf->orig_pte, NULL);
 			ret = VM_FAULT_SIGBUS;
