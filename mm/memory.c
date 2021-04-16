@@ -767,6 +767,9 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 				pte = pte_swp_mkuffd_wp(pte);
 			set_pte_at(src_mm, addr, src_pte, pte);
 		}
+	} else if (is_hwpoison_entry(entry)) {
+		page = hwpoison_entry_to_page(entry);
+		get_page(page);
 	}
 	set_pte_at(dst_mm, addr, dst_pte, pte);
 	return 0;
@@ -1305,6 +1308,9 @@ again:
 
 			page = migration_entry_to_page(entry);
 			rss[mm_counter(page)]--;
+
+		} else if (is_hwpoison_entry(entry)) {
+			put_page(hwpoison_entry_to_page(entry));
 		}
 		if (unlikely(!free_swap_and_cache(entry)))
 			print_bad_pte(vma, addr, ptent, NULL);

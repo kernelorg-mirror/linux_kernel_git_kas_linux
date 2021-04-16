@@ -1575,7 +1575,7 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 				dec_mm_counter(mm, mm_counter(page));
 				set_pte_at(mm, address, pvmw.pte, pteval);
 			}
-
+			get_page(page);
 		} else if (pte_unused(pteval) && !userfaultfd_armed(vma)) {
 			/*
 			 * The guest indicated that the page content is of no
