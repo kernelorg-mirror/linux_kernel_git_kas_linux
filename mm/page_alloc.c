@@ -1224,6 +1224,13 @@ static __always_inline bool free_pages_prepare(struct page *page,
 
 	trace_mm_page_free(page, order);
 
+	if (IS_ENABLED(CONFIG_HAVE_KVM_PROTECTED_MEMORY) &&
+	    unlikely(PageHWPoison(page))) {
+		void kvm_unpoison_page(struct page *page);
+
+		kvm_unpoison_page(page);
+	}
+
 	if (unlikely(PageHWPoison(page)) && !order) {
 		/*
 		 * Do not let hwpoison pages hit pcplists/buddy

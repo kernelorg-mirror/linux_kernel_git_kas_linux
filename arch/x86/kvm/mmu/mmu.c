@@ -43,6 +43,7 @@
 #include <linux/hash.h>
 #include <linux/kern_levels.h>
 #include <linux/kthread.h>
+#include <linux/rmap.h>
 
 #include <asm/page.h>
 #include <asm/memtype.h>
@@ -2758,7 +2759,8 @@ static void direct_pte_prefetch(struct kvm_vcpu *vcpu, u64 *sptep)
 	if (sp->role.level > PG_LEVEL_4K)
 		return;
 
-	__direct_pte_prefetch(vcpu, sp, sptep);
+	if (!vcpu->kvm->mem_protected)
+		__direct_pte_prefetch(vcpu, sp, sptep);
 }
 
 static int host_pfn_mapping_level(struct kvm_vcpu *vcpu, gfn_t gfn,
@@ -3724,6 +3726,14 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 	if (handle_abnormal_pfn(vcpu, is_tdp ? 0 : gpa, gfn, pfn, ACC_ALL, &r))
 		return r;
+
+	if (vcpu->kvm->mem_protected && unlikely(!is_noslot_pfn(pfn))) {
+		if (!kvm_protect_pfn(vcpu->kvm, gfn, pfn)) {
+			unsigned long hva = kvm_vcpu_gfn_to_hva(vcpu, gfn);
+			kvm_send_hwpoison_signal(hva, current);
+			return RET_PF_RETRY;
+		}
+	}
 
 	r = RET_PF_RETRY;
 	spin_lock(&vcpu->kvm->mmu_lock);

@@ -436,6 +436,8 @@ static inline int kvm_arch_vcpu_memslots_id(struct kvm_vcpu *vcpu)
 }
 #endif
 
+#define KVM_NR_SHARED_RANGES 32
+
 /*
  * Note:
  * memslots are not sorted by id anymore, please use id_to_memslot()
@@ -513,6 +515,10 @@ struct kvm {
 	pid_t userspace_pid;
 	unsigned int max_halt_poll_ns;
 	u32 dirty_ring_size;
+	bool mem_protected;
+	void *id;
+	int nr_shared_ranges;
+	struct range shared_ranges[KVM_NR_SHARED_RANGES];
 };
 
 #define kvm_err(fmt, ...) \
@@ -709,6 +715,16 @@ void kvm_arch_flush_shadow_all(struct kvm *kvm);
 void kvm_arch_flush_shadow_memslot(struct kvm *kvm,
 				   struct kvm_memory_slot *slot);
 
+int kvm_protect_memory(struct kvm *kvm);
+
+void __kvm_share_memory(struct kvm *kvm, unsigned long start, unsigned long end);
+int kvm_share_memory(struct kvm *kvm, unsigned long gfn, unsigned long npages);
+
+bool kvm_protect_pfn(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn);
+void kvm_share_pfn(struct kvm *kvm, kvm_pfn_t pfn);
+
+bool kvm_page_allowed(struct kvm *kvm, struct page *page);
+
 int gfn_to_page_many_atomic(struct kvm_memory_slot *slot, gfn_t gfn,
 			    struct page **pages, int nr_pages);
 
@@ -718,6 +734,9 @@ unsigned long gfn_to_hva_prot(struct kvm *kvm, gfn_t gfn, bool *writable);
 unsigned long gfn_to_hva_memslot(struct kvm_memory_slot *slot, gfn_t gfn);
 unsigned long gfn_to_hva_memslot_prot(struct kvm_memory_slot *slot, gfn_t gfn,
 				      bool *writable);
+int copy_from_guest(struct kvm *kvm, void *data, unsigned long hva, int len);
+int copy_to_guest(struct kvm *kvm, unsigned long hva, const void *data, int len);
+
 void kvm_release_page_clean(struct page *page);
 void kvm_release_page_dirty(struct page *page);
 void kvm_set_page_accessed(struct page *page);
