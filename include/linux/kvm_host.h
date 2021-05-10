@@ -520,6 +520,7 @@ struct kvm {
 	pid_t userspace_pid;
 	unsigned int max_halt_poll_ns;
 	u32 dirty_ring_size;
+	bool mem_protected;
 };
 
 #define kvm_err(fmt, ...) \
@@ -725,6 +726,9 @@ unsigned long gfn_to_hva_prot(struct kvm *kvm, gfn_t gfn, bool *writable);
 unsigned long gfn_to_hva_memslot(struct kvm_memory_slot *slot, gfn_t gfn);
 unsigned long gfn_to_hva_memslot_prot(struct kvm_memory_slot *slot, gfn_t gfn,
 				      bool *writable);
+int copy_from_guest(struct kvm *kvm, void *data, unsigned long hva, int len);
+int copy_to_guest(struct kvm *kvm, unsigned long hva, const void *data, int len);
+
 void kvm_release_page_clean(struct page *page);
 void kvm_release_page_dirty(struct page *page);
 void kvm_set_page_accessed(struct page *page);

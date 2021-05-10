@@ -3965,6 +3965,7 @@ int __init shmem_init(void)
 		SHMEM_SB(shm_mnt->mnt_sb)->huge = shmem_huge;
 	else
 		shmem_huge = 0; /* just in case it was patched */
+	shmem_huge = SHMEM_HUGE_FORCE;
 #endif
 	return 0;
 

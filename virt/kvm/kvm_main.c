@@ -1873,7 +1873,8 @@ static bool hva_to_pfn_fast(unsigned long addr, bool write_fault,
  * The slow path to get the pfn of the specified host virtual address,
  * 1 indicates success, -errno is returned if error is detected.
  */
-static int hva_to_pfn_slow(unsigned long addr, bool *async, bool write_fault,
+static int hva_to_pfn_slow(struct kvm *kvm, unsigned long addr,
+			   bool *async, bool write_fault,
 			   bool *writable, kvm_pfn_t *pfn)
 {
 	unsigned int flags = FOLL_HWPOISON;
@@ -1889,6 +1890,8 @@ static int hva_to_pfn_slow(unsigned long addr, bool *async, bool write_fault,
 		flags |= FOLL_WRITE;
 	if (async)
 		flags |= FOLL_NOWAIT;
+	if (kvm->mem_protected)
+		flags |= FOLL_GUEST;
 
 	npages = get_user_pages_unlocked(addr, 1, &page, flags);
 	if (npages != 1)
@@ -1991,8 +1994,9 @@ out:
  * 2): @write_fault = false && @writable, @writable will tell the caller
  *     whether the mapping is writable.
  */
-static kvm_pfn_t hva_to_pfn(unsigned long addr, bool atomic, bool *async,
-			bool write_fault, bool *writable)
+static kvm_pfn_t hva_to_pfn(struct kvm *kvm, unsigned long addr,
+			    bool atomic, bool *async,
+			    bool write_fault, bool *writable)
 {
 	struct vm_area_struct *vma;
 	kvm_pfn_t pfn = 0;
@@ -2007,7 +2011,7 @@ static kvm_pfn_t hva_to_pfn(unsigned long addr, bool atomic, bool *async,
 	if (atomic)
 		return KVM_PFN_ERR_FAULT;
 
-	npages = hva_to_pfn_slow(addr, async, write_fault, writable, &pfn);
+	npages = hva_to_pfn_slow(kvm, addr, async, write_fault, writable, &pfn);
 	if (npages == 1)
 		return pfn;
 
@@ -2066,8 +2070,7 @@ kvm_pfn_t __gfn_to_pfn_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
 		writable = NULL;
 	}
 
-	return hva_to_pfn(addr, atomic, async, write_fault,
-			  writable);
+	return hva_to_pfn(kvm, addr, atomic, async, write_fault, writable);
 }
 EXPORT_SYMBOL_GPL(__gfn_to_pfn_memslot);
 
@@ -2373,19 +2376,86 @@ static int next_segment(unsigned long len, int offset)
 		return len;
 }
 
-static int __kvm_read_guest_page(struct kvm_memory_slot *slot, gfn_t gfn,
-				 void *data, int offset, int len)
+int copy_from_guest(struct kvm *kvm, void *data, unsigned long hva, int len)
 {
-	int r;
+	int offset = offset_in_page(hva);
+	struct page *page;
+	int npages, seg;
+	void *vaddr;
+
+	if (!IS_ENABLED(CONFIG_HAVE_KVM_PROTECTED_MEMORY) ||
+	    !kvm->mem_protected) {
+		return __copy_from_user(data, (void __user *)hva, len);
+	}
+
+	might_fault();
+	kasan_check_write(data, len);
+	check_object_size(data, len, false);
+
+	while ((seg = next_segment(len, offset)) != 0) {
+		npages = get_user_pages_unlocked(hva, 1, &page, FOLL_GUEST);
+		if (npages != 1)
+			return -EFAULT;
+
+		vaddr = kmap_atomic(page);
+		memcpy(data, vaddr + offset, seg);
+		kunmap_atomic(vaddr);
+
+		put_page(page);
+		len -= seg;
+		hva += seg;
+		data += seg;
+		offset = 0;
+	}
+
+	return 0;
+}
+
+int copy_to_guest(struct kvm *kvm, unsigned long hva, const void *data, int len)
+{
+	int offset = offset_in_page(hva);
+	struct page *page;
+	int npages, seg;
+	void *vaddr;
+
+	if (!IS_ENABLED(CONFIG_HAVE_KVM_PROTECTED_MEMORY) ||
+	    !kvm->mem_protected) {
+		return __copy_to_user((void __user *)hva, data, len);
+	}
+
+	might_fault();
+	kasan_check_read(data, len);
+	check_object_size(data, len, true);
+
+	while ((seg = next_segment(len, offset)) != 0) {
+		npages = get_user_pages_unlocked(hva, 1, &page,
+						 FOLL_WRITE | FOLL_GUEST);
+		if (npages != 1)
+			return -EFAULT;
+
+		vaddr = kmap_atomic(page);
+		memcpy(vaddr + offset, data, seg);
+		kunmap_atomic(vaddr);
+
+		put_page(page);
+		len -= seg;
+		hva += seg;
+		data += seg;
+		offset = 0;
+	}
+
+	return 0;
+}
+
+static int __kvm_read_guest_page(struct kvm *kvm, struct kvm_memory_slot *slot,
+				 gfn_t gfn, void *data, int offset, int len)
+{
 	unsigned long addr;
 
 	addr = gfn_to_hva_memslot_prot(slot, gfn, NULL);
 	if (kvm_is_error_hva(addr))
 		return -EFAULT;
-	r = __copy_from_user(data, (void __user *)addr + offset, len);
-	if (r)
-		return -EFAULT;
-	return 0;
+	return copy_from_guest(kvm, data, addr + offset, len);
 }
 
 int kvm_read_guest_page(struct kvm *kvm, gfn_t gfn, void *data, int offset,
@@ -2393,7 +2463,7 @@ int kvm_read_guest_page(struct kvm *kvm, gfn_t gfn, void *data, int offset,
 {
 	struct kvm_memory_slot *slot = gfn_to_memslot(kvm, gfn);
 
-	return __kvm_read_guest_page(slot, gfn, data, offset, len);
+	return __kvm_read_guest_page(kvm, slot, gfn, data, offset, len);
 }
 EXPORT_SYMBOL_GPL(kvm_read_guest_page);
 
@@ -2402,7 +2472,7 @@ int kvm_vcpu_read_guest_page(struct kvm_vcpu *vcpu, gfn_t gfn, void *data,
 {
 	struct kvm_memory_slot *slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
 
-	return __kvm_read_guest_page(slot, gfn, data, offset, len);
+	return __kvm_read_guest_page(vcpu->kvm, slot, gfn, data, offset, len);
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_read_guest_page);
 
@@ -2484,7 +2554,8 @@ static int __kvm_write_guest_page(struct kvm *kvm,
 	addr = gfn_to_hva_memslot(memslot, gfn);
 	if (kvm_is_error_hva(addr))
 		return -EFAULT;
-	r = __copy_to_user((void __user *)addr + offset, data, len);
+
+	r = copy_to_guest(kvm, addr + offset, data, len);
 	if (r)
 		return -EFAULT;
 	mark_page_dirty_in_slot(kvm, memslot, gfn);
@@ -2621,7 +2692,7 @@ int kvm_write_guest_offset_cached(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
 	if (unlikely(!ghc->memslot))
 		return kvm_write_guest(kvm, gpa, data, len);
 
-	r = __copy_to_user((void __user *)ghc->hva + offset, data, len);
+	r = copy_to_guest(kvm, ghc->hva + offset, data, len);
 	if (r)
 		return -EFAULT;
 	mark_page_dirty_in_slot(kvm, ghc->memslot, gpa >> PAGE_SHIFT);
@@ -2642,7 +2713,6 @@ int kvm_read_guest_offset_cached(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
 				 unsigned long len)
 {
 	struct kvm_memslots *slots = kvm_memslots(kvm);
-	int r;
 	gpa_t gpa = ghc->gpa + offset;
 
 	BUG_ON(len + offset > ghc->len);
@@ -2658,11 +2728,7 @@ int kvm_read_guest_offset_cached(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
 	if (unlikely(!ghc->memslot))
 		return kvm_read_guest(kvm, gpa, data, len);
 
-	r = __copy_from_user(data, (void __user *)ghc->hva + offset, len);
-	if (r)
-		return -EFAULT;
-
-	return 0;
+	return copy_from_guest(kvm, data, ghc->hva + offset, len);
 }
 EXPORT_SYMBOL_GPL(kvm_read_guest_offset_cached);
 
