@@ -2455,6 +2455,14 @@ config CC_HAS_RETURN_THUNK
 config CC_HAS_ENTRY_PADDING
 	def_bool $(cc-option,-fpatchable-function-entry=16,16)
 
+config CC_HAS_APX_F
+	def_bool $(cc-option,-mapxf -mapx-inline-asm-use-gpr32)
+
+config X86_KERNEL_APX
+	bool "Compile kernel with Advanced Performance Extensions"
+	depends on X86_64
+	depends on CC_HAS_APX_F
+
 config FUNCTION_PADDING_CFI
 	int
 	default 59 if FUNCTION_ALIGNMENT_64B

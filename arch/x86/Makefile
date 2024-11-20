@@ -114,6 +114,12 @@ else
 KBUILD_CFLAGS += $(call cc-option,-fcf-protection=none)
 endif
 
+ifeq ($(CONFIG_X86_KERNEL_APX),y)
+CC_FLAGS_APX	:= -mapxf -mapx-inline-asm-use-gpr32
+KBUILD_CFLAGS	+= $(CC_FLAGS_APX)
+export CC_FLAGS_APX
+endif
+
 ifeq ($(CONFIG_X86_32),y)
         BITS := 32
         UTS_MACHINE := i386
