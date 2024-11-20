@@ -159,7 +159,7 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 	struct insn ins;
 	int x86_64, ret;
 	unsigned char op1, op2, op3, prefix,
-		      rex = 0, rex_b = 0, rex_r = 0, rex_w = 0, rex_x = 0,
+		      rex_b = 0, rex_r = 0, rex_w = 0, rex_x = 0, rex_m = 0,
 		      modrm = 0, modrm_mod = 0, modrm_rm = 0, modrm_reg = 0,
 		      sib = 0, /* sib_scale = 0, */ sib_index = 0, sib_base = 0;
 	struct stack_op *op = NULL;
@@ -190,25 +190,37 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 	op3 = ins.opcode.bytes[2];
 
 	if (ins.rex_prefix.nbytes) {
-		rex = ins.rex_prefix.bytes[0];
-		rex_w = X86_REX_W(rex) >> 3;
-		rex_r = X86_REX_R(rex) >> 2;
-		rex_x = X86_REX_X(rex) >> 1;
-		rex_b = X86_REX_B(rex);
+		rex_w = insn_rex_w_bit(&ins);
+		rex_m = insn_rex_m_bit(&ins);
+		rex_r = insn_rex_r_bits(&ins);
+		rex_x = insn_rex_x_bits(&ins);
+		rex_b = insn_rex_b_bits(&ins);
 	}
 
 	if (ins.modrm.nbytes) {
 		modrm = ins.modrm.bytes[0];
 		modrm_mod = X86_MODRM_MOD(modrm);
-		modrm_reg = X86_MODRM_REG(modrm) + 8*rex_r;
-		modrm_rm  = X86_MODRM_RM(modrm)  + 8*rex_b;
+		modrm_reg = X86_MODRM_REG(modrm) + rex_r;
+		modrm_rm  = X86_MODRM_RM(modrm)  + rex_b;
 	}
 
 	if (ins.sib.nbytes) {
 		sib = ins.sib.bytes[0];
 		/* sib_scale = X86_SIB_SCALE(sib); */
-		sib_index = X86_SIB_INDEX(sib) + 8*rex_x;
-		sib_base  = X86_SIB_BASE(sib)  + 8*rex_b;
+		sib_index = X86_SIB_INDEX(sib) + rex_x;
+		sib_base  = X86_SIB_BASE(sib)  + rex_b;
+	}
+
+	/*
+	 * REX2.M0 specifies which opcode map to use.
+	 *
+	 * When the bit is set, it is equivalent to legacy 2-byte opcodes where
+	 * the first byte is 0x0f.
+	 */
+	if (rex_m) {
+		op2 = ins.opcode.bytes[0];
+		op3 = ins.opcode.bytes[1];
+		goto map1;
 	}
 
 	switch (op1) {
@@ -232,7 +244,7 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		/* push reg */
 		ADD_OP(op) {
 			op->src.type = OP_SRC_REG;
-			op->src.reg = (op1 & 0x7) + 8*rex_b;
+			op->src.reg = (op1 & 0x7) + rex_b;
 			op->dest.type = OP_DEST_PUSH;
 		}
 
@@ -244,7 +256,7 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		ADD_OP(op) {
 			op->src.type = OP_SRC_POP;
 			op->dest.type = OP_DEST_REG;
-			op->dest.reg = (op1 & 0x7) + 8*rex_b;
+			op->dest.reg = (op1 & 0x7) + rex_b;
 		}
 
 		break;
@@ -512,7 +524,7 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		break;
 
 	case 0x0f:
-
+map1:
 		if (op2 == 0x01) {
 
 			switch (insn_last_prefix_id(&ins)) {

@@ -311,7 +311,7 @@ int insn_get_opcode(struct insn *insn)
 
 	/* Check if there is REX2 prefix or not */
 	if (insn_is_rex2(insn)) {
-		if (insn_rex2_m_bit(insn)) {
+		if (insn_rex_m_bit(insn)) {
 			/* map 1 is escape 0x0f */
 			insn_attr_t esc_attr = inat_get_opcode_attribute(0x0f);
 

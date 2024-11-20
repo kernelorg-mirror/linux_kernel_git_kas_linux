@@ -173,9 +173,68 @@ static inline int insn_is_rex2(struct insn *insn)
 	return insn->rex_prefix.nbytes == 2;
 }
 
-static inline insn_byte_t insn_rex2_m_bit(struct insn *insn)
+static inline insn_byte_t insn_rex_m_bit(struct insn *insn)
 {
+	if (!insn_is_rex2(insn))
+		return 0;
+
 	return X86_REX2_M(insn->rex_prefix.bytes[1]);
+}
+
+static inline insn_byte_t insn_rex_w_bit(struct insn *insn)
+{
+	return X86_REX_W(insn->rex_prefix.bytes[0]);
+}
+
+static inline insn_byte_t insn_rex_r_bits(struct insn *insn)
+{
+	insn_byte_t ret = 0;
+
+	if (insn_is_rex2(insn)) {
+		if (X86_REX_R(insn->rex_prefix.bytes[1]))
+			ret += 8;
+		if (X86_REX2_R(insn->rex_prefix.bytes[1]))
+			ret += 16;
+	} else {
+		if (X86_REX_R(insn->rex_prefix.bytes[0]))
+			ret += 8;
+	}
+
+	return ret;
+}
+
+static inline insn_byte_t insn_rex_x_bits(struct insn *insn)
+{
+	insn_byte_t ret = 0;
+
+	if (insn_is_rex2(insn)) {
+		if (X86_REX_X(insn->rex_prefix.bytes[1]))
+			ret += 8;
+		if (X86_REX2_X(insn->rex_prefix.bytes[1]))
+			ret += 16;
+	} else {
+		if (X86_REX_X(insn->rex_prefix.bytes[0]))
+			ret += 8;
+	}
+
+	return ret;
+}
+
+static inline insn_byte_t insn_rex_b_bits(struct insn *insn)
+{
+	insn_byte_t ret = 0;
+
+	if (insn_is_rex2(insn)) {
+		if (X86_REX_B(insn->rex_prefix.bytes[1]))
+			ret += 8;
+		if (X86_REX2_B(insn->rex_prefix.bytes[1]))
+			ret += 16;
+	} else {
+		if (X86_REX_B(insn->rex_prefix.bytes[0]))
+			ret += 8;
+	}
+
+	return ret;
 }
 
 static inline int insn_is_avx(struct insn *insn)

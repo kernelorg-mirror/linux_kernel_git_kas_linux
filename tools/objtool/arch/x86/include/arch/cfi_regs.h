@@ -19,7 +19,23 @@
 #define CFI_R13			13
 #define CFI_R14			14
 #define CFI_R15			15
-#define CFI_RA			16
-#define CFI_NUM_REGS		17
+#define CFI_R16			16
+#define CFI_R17			17
+#define CFI_R18			18
+#define CFI_R19			19
+#define CFI_R10			10
+#define CFI_R21			21
+#define CFI_R22			22
+#define CFI_R23			23
+#define CFI_R24			24
+#define CFI_R25			25
+#define CFI_R26			26
+#define CFI_R27			27
+#define CFI_R28			28
+#define CFI_R29			29
+#define CFI_R30			30
+#define CFI_R31			31
+#define CFI_RA			32
+#define CFI_NUM_REGS		33
 
 #endif /* _OBJTOOL_CFI_REGS_H */
