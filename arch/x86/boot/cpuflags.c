@@ -105,6 +105,8 @@ void get_cpuflags(void)
 		if (max_intel_level >= 0x00000007) {
 			cpuid_count(0x00000007, 0, &ignored, &ignored,
 					&cpu.flags[16], &ignored);
+			cpuid_count(0x00000007, 1, &ignored, &ignored,
+					&ignored, &cpu.flags[22]);
 		}
 
 		cpuid(0x80000000, &max_amd_level, &ignored, &ignored,
