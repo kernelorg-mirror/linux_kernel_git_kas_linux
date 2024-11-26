@@ -87,6 +87,11 @@ static unsigned int xstate_sizes[XFEATURE_MAX] __ro_after_init =
 	{ [ 0 ... XFEATURE_MAX - 1] = -1};
 static unsigned int xstate_flags[XFEATURE_MAX] __ro_after_init;
 
+/* xstate_layout specifies order of XFEATURES in the un-compacted XSAVE buffer */
+static int xstate_layout_size;
+static unsigned int xstate_layout[XFEATURE_MAX] __ro_after_init =
+	{ [ 0 ... XFEATURE_MAX - 1] = -1};
+
 #define XSTATE_FLAG_SUPERVISOR	BIT(0)
 #define XSTATE_FLAG_ALIGNED64	BIT(1)
 
@@ -215,9 +220,8 @@ static bool xfeature_enabled(enum xfeature xfeature)
 static void __init setup_xstate_cache(void)
 {
 	u32 eax, ebx, ecx, edx, i;
-	/* start at the beginning of the "extended state" */
-	unsigned int last_good_offset = offsetof(struct xregs_state,
-						 extended_state_area);
+	int offset, max_offset;
+
 	/*
 	 * The FP xstates and SSE xstates are legacy states. They are always
 	 * in the fixed offsets in the xsave area in either compacted form
@@ -230,6 +234,7 @@ static void __init setup_xstate_cache(void)
 	xstate_offsets[XFEATURE_SSE]	= xstate_sizes[XFEATURE_FP];
 	xstate_sizes[XFEATURE_SSE]	= sizeof_field(struct fxregs_state,
 						       xmm_space);
+	max_offset = xstate_offsets[XFEATURE_SSE];
 
 	for_each_extended_xfeature(i, fpu_kernel_cfg.max_features) {
 		cpuid_count(XSTATE_CPUID, i, &eax, &ebx, &ecx, &edx);
@@ -246,24 +251,41 @@ static void __init setup_xstate_cache(void)
 
 		xstate_offsets[i] = ebx;
 
-		/*
-		 * In our xstate size checks, we assume that the highest-numbered
-		 * xstate feature has the highest offset in the buffer.  Ensure
-		 * it does.
-		 */
-		WARN_ONCE(last_good_offset > xstate_offsets[i],
-			  "x86/fpu: misordered xstate at %d\n", last_good_offset);
-
-		last_good_offset = xstate_offsets[i];
+		if (max_offset < ebx)
+			max_offset = ebx;
 	}
-}
 
-static void __init print_xstate_feature(u64 xstate_mask)
-{
-	const char *feature_name;
+	/*
+	 * Populate the xstate_layout array.
+	 *
+	 * Note that the order of the xstate components in the un-compacted
+	 * XSAVE buffer may differ from the XCR0 index-relative order.
+	 *
+	 * For example, the APX state (index 19) is placed where the deprecated
+	 * MPX was previously located (indices 3 and 4).
+	 */
+	offset = 0;
+	while (offset <= max_offset) {
+		int min = -1;
 
-	if (cpu_has_xfeatures(xstate_mask, &feature_name))
-		pr_info("x86/fpu: Supporting XSAVE feature 0x%03Lx: '%s'\n", xstate_mask, feature_name);
+		for (i = 0; i < XFEATURE_MAX; i++) {
+			if (xstate_offsets[i] < offset ||
+			    xstate_offsets[i] == -1)
+				continue;
+
+			if (xstate_offsets[i] == offset) {
+				min = i;
+				break;
+			}
+
+			if (min == -1 ||
+			    xstate_offsets[min] > xstate_offsets[i])
+				min = i;
+		}
+
+		offset = xstate_offsets[min] + xstate_sizes[min];
+		xstate_layout[xstate_layout_size++] = min;
+	}
 }
 
 /*
@@ -271,19 +293,14 @@ static void __init print_xstate_feature(u64 xstate_mask)
  */
 static void __init print_xstate_features(void)
 {
-	print_xstate_feature(XFEATURE_MASK_FP);
-	print_xstate_feature(XFEATURE_MASK_SSE);
-	print_xstate_feature(XFEATURE_MASK_YMM);
-	print_xstate_feature(XFEATURE_MASK_BNDREGS);
-	print_xstate_feature(XFEATURE_MASK_BNDCSR);
-	print_xstate_feature(XFEATURE_MASK_OPMASK);
-	print_xstate_feature(XFEATURE_MASK_ZMM_Hi256);
-	print_xstate_feature(XFEATURE_MASK_Hi16_ZMM);
-	print_xstate_feature(XFEATURE_MASK_PKRU);
-	print_xstate_feature(XFEATURE_MASK_PASID);
-	print_xstate_feature(XFEATURE_MASK_CET_USER);
-	print_xstate_feature(XFEATURE_MASK_XTILE_CFG);
-	print_xstate_feature(XFEATURE_MASK_XTILE_DATA);
+	int i;
+
+	for (i = 0; i < xstate_layout_size; i++) {
+		int xfeature = xstate_layout[i];
+
+		pr_info("x86/fpu: Supporting XSAVE feature 0x%03Lx: '%s'\n",
+			BIT_ULL(xfeature), xfeature_names[xfeature]);
+	}
 }
 
 /*
@@ -563,13 +580,23 @@ static bool __init check_xstate_against_struct(int nr)
 static unsigned int xstate_calculate_size(u64 xfeatures, bool compacted)
 {
 	unsigned int topmost = fls64(xfeatures) -  1;
-	unsigned int offset = xstate_offsets[topmost];
+	unsigned int offset;
 
 	if (topmost <= XFEATURE_SSE)
 		return sizeof(struct xregs_state);
 
-	if (compacted)
+	if (compacted) {
 		offset = xfeature_get_offset(xfeatures, topmost);
+	} else {
+		int i = xstate_layout_size;
+
+		do {
+			topmost = xstate_layout[--i];
+		} while (!(BIT_ULL(topmost) & xfeatures));
+
+		offset = xstate_offsets[topmost];
+	}
+
 	return offset + xstate_sizes[topmost];
 }
 
@@ -1159,15 +1186,20 @@ void __copy_xstate_to_uabi_buf(struct membuf to, struct fpstate *fpstate,
 	 */
 	mask = header.xfeatures;
 
-	for_each_extended_xfeature(i, mask) {
+	for (i = 0; i < xstate_layout_size; i++) {
+		int xfeature = xstate_layout[i];
+
+		if (!(mask & BIT_ULL(xfeature)))
+			continue;
+
 		/*
 		 * If there was a feature or alignment gap, zero the space
 		 * in the destination buffer.
 		 */
-		if (zerofrom < xstate_offsets[i])
-			membuf_zero(&to, xstate_offsets[i] - zerofrom);
+		if (zerofrom < xstate_offsets[xfeature])
+			membuf_zero(&to, xstate_offsets[xfeature] - zerofrom);
 
-		if (i == XFEATURE_PKRU) {
+		if (xfeature == XFEATURE_PKRU) {
 			struct pkru_state pkru = {0};
 			/*
 			 * PKRU is not necessarily up to date in the
@@ -1177,14 +1209,14 @@ void __copy_xstate_to_uabi_buf(struct membuf to, struct fpstate *fpstate,
 			membuf_write(&to, &pkru, sizeof(pkru));
 		} else {
 			membuf_write(&to,
-				     __raw_xsave_addr(xsave, i),
-				     xstate_sizes[i]);
+				     __raw_xsave_addr(xsave, xfeature),
+				     xstate_sizes[xfeature]);
 		}
 		/*
 		 * Keep track of the last copied state in the non-compacted
 		 * target buffer for gap zeroing.
 		 */
-		zerofrom = xstate_offsets[i] + xstate_sizes[i];
+		zerofrom = xstate_offsets[xfeature] + xstate_sizes[xfeature];
 	}
 
 out:
@@ -1289,14 +1321,16 @@ static int copy_uabi_to_xstate(struct fpstate *fpstate, const void *kbuf,
 		}
 	}
 
-	for (i = 0; i < XFEATURE_MAX; i++) {
-		mask = BIT_ULL(i);
+	for (i = 0; i < xstate_layout_size; i++) {
+		int xfeature = xstate_layout[i];
+
+		mask = BIT_ULL(xfeature);
 
 		if (hdr.xfeatures & mask) {
-			void *dst = __raw_xsave_addr(xsave, i);
+			void *dst = __raw_xsave_addr(xsave, xfeature);
 
-			offset = xstate_offsets[i];
-			size = xstate_sizes[i];
+			offset = xstate_offsets[xfeature];
+			size = xstate_sizes[xfeature];
 
 			if (copy_from_buffer(dst, offset, size, kbuf, ubuf))
 				return -EFAULT;
@@ -1869,14 +1903,18 @@ static int dump_xsave_layout_desc(struct coredump_params *cprm)
 	int num_records = 0;
 	int i;
 
-	for_each_extended_xfeature(i, fpu_user_cfg.max_features) {
+	for (i = 0; i < xstate_layout_size; i++) {
+		int xfeature = xstate_layout[i];
 		struct x86_xfeat_component xc = {
 			.type   = i,
-			.size   = xstate_sizes[i],
-			.offset = xstate_offsets[i],
+			.size   = xstate_sizes[xfeature],
+			.offset = xstate_offsets[xfeature],
 			/* reserved for future use */
 			.flags  = 0,
 		};
+
+		if (!(fpu_user_cfg.max_features & BIT_ULL(xfeature)))
+			continue;
 
 		if (!dump_emit(cprm, &xc, sizeof(xc)))
 			return 0;
