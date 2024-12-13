@@ -161,7 +161,9 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 	unsigned char op1, op2, op3, prefix,
 		      rex_b = 0, rex_r = 0, rex_w = 0, rex_x = 0, rex_m = 0,
 		      modrm = 0, modrm_mod = 0, modrm_rm = 0, modrm_reg = 0,
-		      sib = 0, /* sib_scale = 0, */ sib_index = 0, sib_base = 0;
+		      sib = 0, /* sib_scale = 0, */ sib_index = 0, sib_base = 0,
+		      vex_b = 0, vex_x = 0, vex_r = 0,
+		      vex_w = 0, vex_nd = 0, vex_v = 0;
 	struct stack_op *op = NULL;
 	struct symbol *sym;
 	u64 imm;
@@ -180,7 +182,8 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 	insn->len = ins.length;
 	insn->type = INSN_OTHER;
 
-	if (ins.vex_prefix.nbytes)
+	/* Only care about EVEX-prefixed APX versions of legacy instruction */
+	if (ins.vex_prefix.nbytes != 0 && insn_vex_m_bits(&ins) != 4)
 		return 0;
 
 	prefix = ins.prefixes.bytes[0];
@@ -197,18 +200,27 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		rex_b = insn_rex_b_bits(&ins);
 	}
 
+	if (ins.vex_prefix.nbytes) {
+		vex_w = insn_vex_w_bit(&ins);
+		vex_nd = insn_vex_nd_bit(&ins);
+		vex_r = insn_vex_r_bits(&ins);
+		vex_x = insn_vex_x_bits(&ins);
+		vex_b = insn_vex_b_bits(&ins);
+		vex_v = insn_vex_v_bits(&ins);
+	}
+
 	if (ins.modrm.nbytes) {
 		modrm = ins.modrm.bytes[0];
 		modrm_mod = X86_MODRM_MOD(modrm);
-		modrm_reg = X86_MODRM_REG(modrm) + rex_r;
-		modrm_rm  = X86_MODRM_RM(modrm)  + rex_b;
+		modrm_reg = X86_MODRM_REG(modrm) + rex_r + vex_r;
+		modrm_rm  = X86_MODRM_RM(modrm)  + rex_b + vex_b;
 	}
 
 	if (ins.sib.nbytes) {
 		sib = ins.sib.bytes[0];
 		/* sib_scale = X86_SIB_SCALE(sib); */
-		sib_index = X86_SIB_INDEX(sib) + rex_x;
-		sib_base  = X86_SIB_BASE(sib)  + rex_b;
+		sib_index = X86_SIB_INDEX(sib) + rex_x + vex_x;
+		sib_base  = X86_SIB_BASE(sib)  + rex_b + vex_b;
 	}
 
 	/*
@@ -227,8 +239,11 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 
 	case 0x1:
 	case 0x29:
-		if (rex_w && rm_is_reg(CFI_SP)) {
+		/* 64bit only */
+		if (!rex_w && !vex_w)
+			break;
 
+		if (rm_is_reg(CFI_SP) && !vex_nd) {
 			/* add/sub reg, %rsp */
 			ADD_OP(op) {
 				op->src.type = OP_SRC_ADD;
@@ -236,7 +251,17 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 				op->dest.type = OP_DEST_REG;
 				op->dest.reg = CFI_SP;
 			}
+
+			break;
 		}
+
+		if (vex_nd && vex_v == CFI_SP) {
+			/* add/sub reg1, reg2, %rsp */
+
+			WARN_INSN(insn, "Unexpected add/sub reg1,reg2,%%rsp");
+			break;
+		}
+
 		break;
 
 	case 0x50 ... 0x57:
@@ -288,8 +313,13 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		 */
 
 		/* 64bit only */
-		if (!rex_w)
+		if (!rex_w && !vex_w)
 			break;
+
+		if (vex_nd && vex_v == CFI_SP) {
+			WARN_INSN(insn, "Unexpected EVEX-prefixed add/or/adx/sbb");
+			break;
+		}
 
 		/* %rsp target only */
 		if (!rm_is_reg(CFI_SP))
@@ -496,11 +526,29 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		break;
 
 	case 0x8f:
-		/* pop to mem */
-		ADD_OP(op) {
-			op->src.type = OP_SRC_POP;
-			op->dest.type = OP_DEST_MEM;
+
+		if (vex_nd) {
+			/* pop2 reg, reg */
+
+			ADD_OP(op) {
+				op->src.type = OP_SRC_POP;
+				op->dest.type = OP_DEST_REG;
+				op->dest.reg = vex_v;
+			}
+
+			ADD_OP(op) {
+				op->src.type = OP_SRC_POP;
+				op->dest.type = OP_DEST_REG;
+				op->dest.reg = modrm_rm;
+			}
+		} else {
+			/* pop to mem */
+			ADD_OP(op) {
+				op->src.type = OP_SRC_POP;
+				op->dest.type = OP_DEST_MEM;
+			}
 		}
+
 		break;
 
 	case 0x90:
@@ -735,11 +783,26 @@ map1:
 			insn->type = INSN_CONTEXT_SWITCH;
 
 		} else if (modrm_reg == 6) {
+			if (vex_nd) {
+				/* push2 reg, reg */
 
-			/* push from mem */
-			ADD_OP(op) {
-				op->src.type = OP_SRC_CONST;
-				op->dest.type = OP_DEST_PUSH;
+				ADD_OP(op) {
+					op->src.type = OP_SRC_REG;
+					op->src.reg = vex_v;
+					op->dest.type = OP_DEST_PUSH;
+				}
+
+				ADD_OP(op) {
+					op->src.type = OP_SRC_REG;
+					op->src.reg = modrm_rm;
+					op->dest.type = OP_DEST_PUSH;
+				}
+			} else {
+				/* push from mem */
+				ADD_OP(op) {
+					op->src.type = OP_SRC_CONST;
+					op->dest.type = OP_DEST_PUSH;
+				}
 			}
 		}
 

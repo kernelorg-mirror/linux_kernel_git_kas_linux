@@ -135,6 +135,11 @@ struct insn {
 #define X86_VEX_V(vex)	(((vex) & 0x78) >> 3)	/* VEX3 Byte2, VEX2 Byte1 */
 #define X86_VEX_P(vex)	((vex) & 0x03)		/* VEX3 Byte2, VEX2 Byte1 */
 #define X86_VEX_M_MAX	0x1f			/* VEX3.M Maximum value */
+#define X86_EVEX_V(vex)	((vex) & 8)		/* EVEX Byte3 */
+#define X86_EVEX_R(vex)	((vex) & 0x10)		/* EVEX Byte1 */
+#define X86_EVEX_X(vex)	((vex) & 4)		/* EVEX Byte2 */
+#define X86_EVEX_B(vex)	((vex) & 8)		/* EVEX Byte1 */
+#define X86_EVEX_ND(vex)	((vex) & 0x10)	/* EVEX Byte3 */
 
 extern void insn_init(struct insn *insn, const void *kaddr, int buf_len, int x86_64);
 extern int insn_get_prefixes(struct insn *insn);
@@ -279,6 +284,83 @@ static inline insn_byte_t insn_vex_w_bit(struct insn *insn)
 	if (insn->vex_prefix.nbytes < 3)
 		return 0;
 	return X86_VEX_W(insn->vex_prefix.bytes[2]);
+}
+
+static inline insn_byte_t insn_vex_nd_bit(struct insn *insn)
+{
+	if (insn->vex_prefix.nbytes < 4)
+		return 0;
+
+	return X86_EVEX_ND(insn->vex_prefix.bytes[3]);
+}
+
+static inline insn_byte_t insn_vex_r_bits(struct insn *insn)
+{
+	insn_byte_t ret = 0;
+
+	if (!X86_VEX_R(insn->vex_prefix.bytes[1]))
+		ret += 8;
+
+	/* EVEX */
+	if (insn->vex_prefix.nbytes == 4 &&
+	    !X86_EVEX_R(insn->vex_prefix.bytes[1])) {
+		ret += 16;
+	}
+
+	return ret;
+}
+
+static inline insn_byte_t insn_vex_x_bits(struct insn *insn)
+{
+	insn_byte_t ret = 0;
+
+	if (!X86_VEX_X(insn->vex_prefix.bytes[1]))
+		ret += 8;
+
+	/* EVEX */
+	if (insn->vex_prefix.nbytes == 4 &&
+	    !X86_EVEX_X(insn->vex_prefix.bytes[2])) {
+		ret += 16;
+	}
+
+	return ret;
+}
+
+static inline insn_byte_t insn_vex_b_bits(struct insn *insn)
+{
+	insn_byte_t ret = 0;
+
+	if (!X86_VEX_B(insn->vex_prefix.bytes[1]))
+		ret += 8;
+
+	/* EVEX */
+	if (insn->vex_prefix.nbytes == 4 &&
+	    X86_EVEX_B(insn->vex_prefix.bytes[1])) {
+		ret += 16;
+	}
+
+	return ret;
+}
+
+static inline insn_byte_t insn_vex_v_bits(struct insn *insn)
+{
+	insn_byte_t ret;
+
+	if (insn->vex_prefix.nbytes >= 3)	/* 3 bytes VEX or EVEX */
+		ret = X86_VEX_V(insn->vex_prefix.bytes[2]);
+	else					/* 2 bytes VEX */
+		ret = X86_VEX_V(insn->vex_prefix.bytes[1]);
+
+	/* VEX.Vx are inverted */
+	ret ^= 0xf;
+
+	/* EVEX */
+	if (insn->vex_prefix.nbytes == 4 &&
+	    !X86_EVEX_V(insn->vex_prefix.bytes[3])) {
+		ret += 16;
+	}
+
+	return ret;
 }
 
 /* Get the last prefix id from last prefix or VEX prefix */
