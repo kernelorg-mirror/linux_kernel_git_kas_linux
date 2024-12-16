@@ -25,6 +25,8 @@ CFLAGS_REMOVE_mem_encrypt_identity.o	= -pg
 CFLAGS_REMOVE_pgprot.o			= -pg
 endif
 
+CFLAGS_REMOVE_mem_encrypt_identity.o	+= $(CC_FLAGS_APX)
+
 obj-y				:=  init.o init_$(BITS).o fault.o ioremap.o extable.o mmap.o \
 				    pgtable.o physaddr.o tlb.o cpu_entry_area.o maccess.o pgprot.o
 

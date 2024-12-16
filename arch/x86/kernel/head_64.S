@@ -404,6 +404,20 @@ SYM_INNER_LABEL(common_startup_64, SYM_L_LOCAL)
 	pushq $0
 	popfq
 
+#ifdef CONFIG_X86_KERNEL_APX
+
+#define XFEATURE_APX 19
+
+	movq	%cr4, %rax
+	btsl	$X86_CR4_OSXSAVE_BIT, %eax
+	movq	%rax, %cr4
+
+	xor	%ecx, %ecx
+	xgetbv
+	btsl	$XFEATURE_APX, %eax
+	xsetbv
+#endif
+
 	/* Pass the boot_params pointer as first argument */
 	movq	%r15, %rdi
 
