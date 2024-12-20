@@ -114,6 +114,24 @@ struct pt_regs {
 	unsigned long bx;
 
 	/* These regs are callee-clobbered. Always saved on kernel entry. */
+#ifdef CONFIG_X86_KERNEL_APX
+	unsigned long r31;
+	unsigned long r30;
+	unsigned long r29;
+	unsigned long r28;
+	unsigned long r27;
+	unsigned long r26;
+	unsigned long r25;
+	unsigned long r24;
+	unsigned long r23;
+	unsigned long r22;
+	unsigned long r21;
+	unsigned long r20;
+	unsigned long r19;
+	unsigned long r18;
+	unsigned long r17;
+	unsigned long r16;
+#endif
 	unsigned long r11;
 	unsigned long r10;
 	unsigned long r9;
