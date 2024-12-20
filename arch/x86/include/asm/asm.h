@@ -170,7 +170,7 @@ static __always_inline __pure void *rip_rel_ptr(void *p)
 	".macro extable_type_reg type:req reg:req\n"						\
 	".set .Lfound, 0\n"									\
 	".set .Lregnr, 0\n"									\
-	".irp rs,rax,rcx,rdx,rbx,rsp,rbp,rsi,rdi,r8,r9,r10,r11,r12,r13,r14,r15\n"		\
+	".irp rs,rax,rcx,rdx,rbx,rsp,rbp,rsi,rdi,r8,r9,r10,r11,r12,r13,r14,r15,r16,r17,r18,19,r20,r21,r22,r23,r24,r25,r26,r27,r28,r29,r30,r31\n"		\
 	".ifc \\reg, %%\\rs\n"									\
 	".set .Lfound, .Lfound+1\n"								\
 	".long \\type + (.Lregnr << 8)\n"							\
@@ -178,7 +178,7 @@ static __always_inline __pure void *rip_rel_ptr(void *p)
 	".set .Lregnr, .Lregnr+1\n"								\
 	".endr\n"										\
 	".set .Lregnr, 0\n"									\
-	".irp rs,eax,ecx,edx,ebx,esp,ebp,esi,edi,r8d,r9d,r10d,r11d,r12d,r13d,r14d,r15d\n"	\
+	".irp rs,eax,ecx,edx,ebx,esp,ebp,esi,edi,r8d,r9d,r10d,r11d,r12d,r13d,r14d,r15d,r16d,r17d,r18,19d,r20d,r21d,r22d,r23d,r24d,r25d,r26d,r27d,r28d,r29d,r30d,r31d\n"	\
 	".ifc \\reg, %%\\rs\n"									\
 	".set .Lfound, .Lfound+1\n"								\
 	".long \\type + (.Lregnr << 8)\n"							\
