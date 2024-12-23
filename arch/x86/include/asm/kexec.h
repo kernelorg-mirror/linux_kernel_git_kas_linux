@@ -107,6 +107,24 @@ static inline void crash_setup_regs(struct pt_regs *newregs,
 		asm volatile("movq %%r13,%0" : "=m"(newregs->r13));
 		asm volatile("movq %%r14,%0" : "=m"(newregs->r14));
 		asm volatile("movq %%r15,%0" : "=m"(newregs->r15));
+#ifdef CONFIG_X86_KERNEL_APX
+		asm volatile("movq %%r16,%0" : "=m"(newregs->r16));
+		asm volatile("movq %%r17,%0" : "=m"(newregs->r17));
+		asm volatile("movq %%r18,%0" : "=m"(newregs->r18));
+		asm volatile("movq %%r19,%0" : "=m"(newregs->r19));
+		asm volatile("movq %%r20,%0" : "=m"(newregs->r20));
+		asm volatile("movq %%r21,%0" : "=m"(newregs->r21));
+		asm volatile("movq %%r22,%0" : "=m"(newregs->r22));
+		asm volatile("movq %%r23,%0" : "=m"(newregs->r23));
+		asm volatile("movq %%r24,%0" : "=m"(newregs->r24));
+		asm volatile("movq %%r25,%0" : "=m"(newregs->r25));
+		asm volatile("movq %%r26,%0" : "=m"(newregs->r26));
+		asm volatile("movq %%r27,%0" : "=m"(newregs->r27));
+		asm volatile("movq %%r28,%0" : "=m"(newregs->r28));
+		asm volatile("movq %%r29,%0" : "=m"(newregs->r29));
+		asm volatile("movq %%r30,%0" : "=m"(newregs->r30));
+		asm volatile("movq %%r31,%0" : "=m"(newregs->r31));
+#endif
 		asm volatile("movl %%ss, %%eax;" :"=a"(newregs->ss));
 		asm volatile("movl %%cs, %%eax;" :"=a"(newregs->cs));
 		asm volatile("pushfq; popq %0" :"=m"(newregs->flags));
