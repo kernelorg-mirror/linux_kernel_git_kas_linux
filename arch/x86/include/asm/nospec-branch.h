@@ -421,17 +421,17 @@ static inline void call_depth_return_thunk(void) {}
 
 #ifdef CONFIG_MITIGATION_RETPOLINE
 
-#define GEN(reg) \
+#define GEN(reg, regno) \
 	extern retpoline_thunk_t __x86_indirect_thunk_ ## reg;
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
-#define GEN(reg)						\
+#define GEN(reg, regno)						\
 	extern retpoline_thunk_t __x86_indirect_call_thunk_ ## reg;
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
-#define GEN(reg)						\
+#define GEN(reg, regno)						\
 	extern retpoline_thunk_t __x86_indirect_jump_thunk_ ## reg;
 #include <asm/GEN-for-each-reg.h>
 #undef GEN

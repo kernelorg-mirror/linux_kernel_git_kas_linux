@@ -60,14 +60,14 @@ SYM_INNER_LABEL(__x86_indirect_thunk_\reg, SYM_L_GLOBAL)
 	.align RETPOLINE_THUNK_SIZE
 SYM_CODE_START(__x86_indirect_thunk_array)
 
-#define GEN(reg) THUNK reg
+#define GEN(reg, regno) THUNK reg
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
 	.align RETPOLINE_THUNK_SIZE
 SYM_CODE_END(__x86_indirect_thunk_array)
 
-#define GEN(reg) __EXPORT_THUNK(__x86_indirect_thunk_ ## reg)
+#define GEN(reg, regno) __EXPORT_THUNK(__x86_indirect_thunk_ ## reg)
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
@@ -89,14 +89,14 @@ SYM_INNER_LABEL(__x86_indirect_call_thunk_\reg, SYM_L_GLOBAL)
 	.align RETPOLINE_THUNK_SIZE
 SYM_CODE_START(__x86_indirect_call_thunk_array)
 
-#define GEN(reg) CALL_THUNK reg
+#define GEN(reg, regno) CALL_THUNK reg
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
 	.align RETPOLINE_THUNK_SIZE
 SYM_CODE_END(__x86_indirect_call_thunk_array)
 
-#define GEN(reg) __EXPORT_THUNK(__x86_indirect_call_thunk_ ## reg)
+#define GEN(reg, regno) __EXPORT_THUNK(__x86_indirect_call_thunk_ ## reg)
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
@@ -115,14 +115,14 @@ SYM_INNER_LABEL(__x86_indirect_jump_thunk_\reg, SYM_L_GLOBAL)
 	.align RETPOLINE_THUNK_SIZE
 SYM_CODE_START(__x86_indirect_jump_thunk_array)
 
-#define GEN(reg) JUMP_THUNK reg
+#define GEN(reg, regno) JUMP_THUNK reg
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
 	.align RETPOLINE_THUNK_SIZE
 SYM_CODE_END(__x86_indirect_jump_thunk_array)
 
-#define GEN(reg) __EXPORT_THUNK(__x86_indirect_jump_thunk_ ## reg)
+#define GEN(reg, regno) __EXPORT_THUNK(__x86_indirect_jump_thunk_ ## reg)
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 #endif
