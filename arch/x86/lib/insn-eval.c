@@ -462,6 +462,17 @@ int pt_regs_offset(struct pt_regs *regs, int regno)
 	return -EDOM;
 }
 
+unsigned long *pt_regs_ptr(struct pt_regs *regs, int regno)
+{
+	int offset = pt_regs_offset(regs, regno);
+	static unsigned long dummy;
+
+	if (WARN_ON_ONCE(offset < 0))
+		return &dummy;
+
+	return (unsigned long *)((unsigned long)regs + offset);
+}
+
 static int get_regno(struct insn *insn, enum reg_type type)
 {
 	int nr_registers = ARRAY_SIZE(pt_regoff);

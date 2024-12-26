@@ -16,6 +16,7 @@
 #define INSN_CODE_SEG_PARAMS(oper_sz, addr_sz) (oper_sz | (addr_sz << 4))
 
 int pt_regs_offset(struct pt_regs *regs, int regno);
+unsigned long *pt_regs_ptr(struct pt_regs *regs, int regno);
 
 bool insn_has_rep_prefix(struct insn *insn);
 void __user *insn_get_addr_ref(struct insn *insn, struct pt_regs *regs);

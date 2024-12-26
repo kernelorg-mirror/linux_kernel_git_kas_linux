@@ -13,17 +13,6 @@
 #include <asm/insn-eval.h>
 #include <asm/sgx.h>
 
-static inline unsigned long *pt_regs_nr(struct pt_regs *regs, int nr)
-{
-	int reg_offset = pt_regs_offset(regs, nr);
-	static unsigned long __dummy;
-
-	if (WARN_ON_ONCE(reg_offset < 0))
-		return &__dummy;
-
-	return (unsigned long *)((unsigned long)regs + reg_offset);
-}
-
 static inline unsigned long
 ex_fixup_addr(const struct exception_table_entry *x)
 {
@@ -187,7 +176,7 @@ static bool ex_handler_msr(const struct exception_table_entry *fixup,
 	}
 
 	if (safe)
-		*pt_regs_nr(regs, reg) = -EIO;
+		*pt_regs_ptr(regs, reg) = -EIO;
 
 	return ex_handler_default(fixup, regs);
 }
@@ -204,7 +193,7 @@ static bool ex_handler_clear_fs(const struct exception_table_entry *fixup,
 static bool ex_handler_imm_reg(const struct exception_table_entry *fixup,
 			       struct pt_regs *regs, int reg, int imm)
 {
-	*pt_regs_nr(regs, reg) = (long)imm;
+	*pt_regs_ptr(regs, reg) = (long)imm;
 	return ex_handler_default(fixup, regs);
 }
 
@@ -213,7 +202,7 @@ static bool ex_handler_ucopy_len(const struct exception_table_entry *fixup,
 				  unsigned long fault_address,
 				  int reg, int imm)
 {
-	regs->cx = imm * regs->cx + *pt_regs_nr(regs, reg);
+	regs->cx = imm * regs->cx + *pt_regs_ptr(regs, reg);
 	return ex_handler_uaccess(fixup, regs, trapnr, fault_address);
 }
 
