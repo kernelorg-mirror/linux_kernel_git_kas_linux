@@ -16,110 +16,26 @@
 
 	.macro R32_NUM opd r32
 	\opd = REG_NUM_INVALID
-	.ifc \r32,%eax
-	\opd = 0
+
+#define GEN(reg, regno)		\
+	.ifc \r32, ## reg	\
+	\opd = regno		\
 	.endif
-	.ifc \r32,%ecx
-	\opd = 1
-	.endif
-	.ifc \r32,%edx
-	\opd = 2
-	.endif
-	.ifc \r32,%ebx
-	\opd = 3
-	.endif
-	.ifc \r32,%esp
-	\opd = 4
-	.endif
-	.ifc \r32,%ebp
-	\opd = 5
-	.endif
-	.ifc \r32,%esi
-	\opd = 6
-	.endif
-	.ifc \r32,%edi
-	\opd = 7
-	.endif
-#ifdef CONFIG_X86_64
-	.ifc \r32,%r8d
-	\opd = 8
-	.endif
-	.ifc \r32,%r9d
-	\opd = 9
-	.endif
-	.ifc \r32,%r10d
-	\opd = 10
-	.endif
-	.ifc \r32,%r11d
-	\opd = 11
-	.endif
-	.ifc \r32,%r12d
-	\opd = 12
-	.endif
-	.ifc \r32,%r13d
-	\opd = 13
-	.endif
-	.ifc \r32,%r14d
-	\opd = 14
-	.endif
-	.ifc \r32,%r15d
-	\opd = 15
-	.endif
-#endif
+#include <asm/GEN-for-each-dword-reg.h>
+#undef GEN
+
 	.endm
 
 	.macro R64_NUM opd r64
 	\opd = REG_NUM_INVALID
-#ifdef CONFIG_X86_64
-	.ifc \r64,%rax
-	\opd = 0
+
+#define GEN(reg, regno)		\
+	.ifc \r32, ## reg	\
+	\opd = regno		\
 	.endif
-	.ifc \r64,%rcx
-	\opd = 1
-	.endif
-	.ifc \r64,%rdx
-	\opd = 2
-	.endif
-	.ifc \r64,%rbx
-	\opd = 3
-	.endif
-	.ifc \r64,%rsp
-	\opd = 4
-	.endif
-	.ifc \r64,%rbp
-	\opd = 5
-	.endif
-	.ifc \r64,%rsi
-	\opd = 6
-	.endif
-	.ifc \r64,%rdi
-	\opd = 7
-	.endif
-	.ifc \r64,%r8
-	\opd = 8
-	.endif
-	.ifc \r64,%r9
-	\opd = 9
-	.endif
-	.ifc \r64,%r10
-	\opd = 10
-	.endif
-	.ifc \r64,%r11
-	\opd = 11
-	.endif
-	.ifc \r64,%r12
-	\opd = 12
-	.endif
-	.ifc \r64,%r13
-	\opd = 13
-	.endif
-	.ifc \r64,%r14
-	\opd = 14
-	.endif
-	.ifc \r64,%r15
-	\opd = 15
-	.endif
-#endif
+#include <asm/GEN-for-each-reg.h>
+#undef GEN
+
 	.endm
 
 	.macro REG_TYPE type reg
