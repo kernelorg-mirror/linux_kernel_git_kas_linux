@@ -740,10 +740,8 @@ static int prepare_emulation(struct kprobe *p, struct insn *insn)
 			return -EOPNOTSUPP;	/* TODO: support memory addressing */
 
 		p->ainsn.indirect.reg = X86_MODRM_RM(opcode);
-#ifdef CONFIG_X86_64
-		if (X86_REX_B(insn->rex_prefix.value))
-			p->ainsn.indirect.reg += 8;
-#endif
+		if (insn->rex_prefix.nbytes)
+			p->ainsn.indirect.reg += insn_rex_b_bits(insn);
 		break;
 	default:
 		break;
