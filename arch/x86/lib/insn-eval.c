@@ -454,7 +454,7 @@ static int get_regno(struct insn *insn, enum reg_type type)
 	 * reading a 64-bit-only register.
 	 */
 	if (IS_ENABLED(CONFIG_X86_64) && !insn->x86_64)
-		nr_registers -= 8;
+		nr_registers = 8;
 
 	switch (type) {
 	case REG_TYPE_RM:
@@ -467,21 +467,27 @@ static int get_regno(struct insn *insn, enum reg_type type)
 		if (!X86_MODRM_MOD(insn->modrm.value) && regno == 5)
 			return -EDOM;
 
-		if (X86_REX_B(insn->rex_prefix.value))
-			regno += 8;
+		if (insn->rex_prefix.nbytes)
+			regno += insn_rex_b_bits(insn);
+		if (insn->vex_prefix.nbytes)
+			regno += insn_vex_b_bits(insn);
 		break;
 
 	case REG_TYPE_REG:
 		regno = X86_MODRM_REG(insn->modrm.value);
+		if (insn->rex_prefix.nbytes)
+			regno += insn_rex_r_bits(insn);
+		if (insn->vex_prefix.nbytes)
+			regno += insn_vex_r_bits(insn);
 
-		if (X86_REX_R(insn->rex_prefix.value))
-			regno += 8;
 		break;
 
 	case REG_TYPE_INDEX:
 		regno = X86_SIB_INDEX(insn->sib.value);
-		if (X86_REX_X(insn->rex_prefix.value))
-			regno += 8;
+		if (insn->rex_prefix.nbytes)
+			regno += insn_rex_x_bits(insn);
+		if (insn->vex_prefix.nbytes)
+			regno += insn_vex_x_bits(insn);
 
 		/*
 		 * If ModRM.mod != 3 and SIB.index = 4 the scale*index
@@ -503,8 +509,10 @@ static int get_regno(struct insn *insn, enum reg_type type)
 		if (!X86_MODRM_MOD(insn->modrm.value) && regno == 5)
 			return -EDOM;
 
-		if (X86_REX_B(insn->rex_prefix.value))
-			regno += 8;
+		if (insn->rex_prefix.nbytes)
+			regno += insn_rex_b_bits(insn);
+		if (insn->vex_prefix.nbytes)
+			regno += insn_vex_b_bits(insn);
 		break;
 
 	default:
