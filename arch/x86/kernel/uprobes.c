@@ -17,6 +17,7 @@
 #include <linux/kdebug.h>
 #include <asm/processor.h>
 #include <asm/insn.h>
+#include <asm/insn-eval.h>
 #include <asm/mmu_context.h>
 
 /* Post-execution fixups. */
@@ -779,7 +780,7 @@ static bool branch_emulate_op(struct arch_uprobe *auprobe, struct pt_regs *regs)
 
 static bool push_emulate_op(struct arch_uprobe *auprobe, struct pt_regs *regs)
 {
-	unsigned long *src_ptr = (void *)regs + auprobe->push.reg_offset;
+	unsigned long *src_ptr = pt_regs_ptr(regs, auprobe->push.reg);
 
 	if (emulate_push_stack(regs, *src_ptr))
 		return false;
@@ -883,79 +884,16 @@ setup:
 /* Returns -ENOSYS if push_xol_ops doesn't handle this insn */
 static int push_setup_xol_ops(struct arch_uprobe *auprobe, struct insn *insn)
 {
-	u8 opc1 = OPCODE1(insn), reg_offset = 0;
+	u8 opc1 = OPCODE1(insn);
+	u8 rex_b = 0;
 
 	if (opc1 < 0x50 || opc1 > 0x57)
 		return -ENOSYS;
 
-	if (insn->length > 2)
-		return -ENOSYS;
-	if (insn->length == 2) {
-		/* only support rex_prefix 0x41 (x64 only) */
-#ifdef CONFIG_X86_64
-		if (insn->rex_prefix.nbytes != 1 ||
-		    insn->rex_prefix.bytes[0] != 0x41)
-			return -ENOSYS;
+	if (insn->rex_prefix.nbytes)
+		rex_b = insn_rex_b_bits(insn);
 
-		switch (opc1) {
-		case 0x50:
-			reg_offset = offsetof(struct pt_regs, r8);
-			break;
-		case 0x51:
-			reg_offset = offsetof(struct pt_regs, r9);
-			break;
-		case 0x52:
-			reg_offset = offsetof(struct pt_regs, r10);
-			break;
-		case 0x53:
-			reg_offset = offsetof(struct pt_regs, r11);
-			break;
-		case 0x54:
-			reg_offset = offsetof(struct pt_regs, r12);
-			break;
-		case 0x55:
-			reg_offset = offsetof(struct pt_regs, r13);
-			break;
-		case 0x56:
-			reg_offset = offsetof(struct pt_regs, r14);
-			break;
-		case 0x57:
-			reg_offset = offsetof(struct pt_regs, r15);
-			break;
-		}
-#else
-		return -ENOSYS;
-#endif
-	} else {
-		switch (opc1) {
-		case 0x50:
-			reg_offset = offsetof(struct pt_regs, ax);
-			break;
-		case 0x51:
-			reg_offset = offsetof(struct pt_regs, cx);
-			break;
-		case 0x52:
-			reg_offset = offsetof(struct pt_regs, dx);
-			break;
-		case 0x53:
-			reg_offset = offsetof(struct pt_regs, bx);
-			break;
-		case 0x54:
-			reg_offset = offsetof(struct pt_regs, sp);
-			break;
-		case 0x55:
-			reg_offset = offsetof(struct pt_regs, bp);
-			break;
-		case 0x56:
-			reg_offset = offsetof(struct pt_regs, si);
-			break;
-		case 0x57:
-			reg_offset = offsetof(struct pt_regs, di);
-			break;
-		}
-	}
-
-	auprobe->push.reg_offset = reg_offset;
+	auprobe->push.reg = (opc1 & 0xf) + rex_b;
 	auprobe->push.ilen = insn->length;
 	auprobe->ops = &push_xol_ops;
 	return 0;

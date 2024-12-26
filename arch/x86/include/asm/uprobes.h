@@ -41,7 +41,7 @@ struct arch_uprobe {
 			u8	ilen;
 		} 			defparam;
 		struct {
-			u8	reg_offset;	/* to the start of pt_regs */
+			u8	reg;
 			u8	ilen;
 		}			push;
 	};
