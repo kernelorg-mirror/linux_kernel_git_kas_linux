@@ -16,6 +16,7 @@
 /* Bit definitions of TDX_FEATURES0 metadata field */
 #define TDX_FEATURES0_NO_RBP_MOD		BIT_ULL(18)
 #define TDX_FEATURES0_CLFLUSH_BEFORE_ALLOC	BIT_ULL(23)
+#define TDX_FEATURES0_DYNAMIC_PAMT		BIT_ULL(36)
 
 #ifndef __ASSEMBLER__
 
@@ -112,7 +113,7 @@ const struct tdx_sys_info *tdx_get_sysinfo(void);
 
 static inline bool tdx_supports_dynamic_pamt(const struct tdx_sys_info *sysinfo)
 {
-	return false; /* To be enabled when kernel is ready */
+	return sysinfo->features.tdx_features0 & TDX_FEATURES0_DYNAMIC_PAMT;
 }
 
 int tdx_guest_keyid_alloc(void);
