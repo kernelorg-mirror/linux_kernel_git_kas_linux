@@ -438,6 +438,18 @@ static int fill_out_tdmrs(struct list_head *tmb_list,
 	return 0;
 }
 
+static unsigned long tdmr_get_pamt_bitmap_sz(struct tdmr_info *tdmr)
+{
+	unsigned long pamt_sz, nr_pamt_entries;
+	int bits_per_entry;
+
+	bits_per_entry = tdx_sysinfo.tdmr.pamt_page_bitmap_entry_bits;
+	nr_pamt_entries = tdmr->size >> PAGE_SHIFT;
+	pamt_sz = DIV_ROUND_UP(nr_pamt_entries * bits_per_entry, BITS_PER_BYTE);
+
+	return ALIGN(pamt_sz, PAGE_SIZE);
+}
+
 /*
  * Calculate PAMT size given a TDMR and a page size.  The returned
  * PAMT size is always aligned up to 4K page boundary.
@@ -449,6 +461,10 @@ static unsigned long tdmr_get_pamt_sz(struct tdmr_info *tdmr, int pgsz,
 
 	switch (pgsz) {
 	case TDX_PS_4K:
+		/* With Dynamic PAMT, PAMT_4K is replaced with a bitmap */
+		if (tdx_supports_dynamic_pamt(&tdx_sysinfo))
+			return tdmr_get_pamt_bitmap_sz(tdmr);
+
 		nr_pamt_entries = tdmr->size >> PAGE_SHIFT;
 		break;
 	case TDX_PS_2M:
