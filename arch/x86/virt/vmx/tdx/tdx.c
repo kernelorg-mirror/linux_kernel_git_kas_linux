@@ -2017,3 +2017,261 @@ u64 tdh_phymem_page_wbinvd_hkid(u64 hkid, struct page *page)
 	return seamcall(TDH_PHYMEM_PAGE_WBINVD, &args);
 }
 EXPORT_SYMBOL_GPL(tdh_phymem_page_wbinvd_hkid);
+
+/* Number PAMT pages to be provided to TDX module per 2M region of PA */
+static int tdx_nr_pamt_pages(void)
+{
+	if (!tdx_supports_dynamic_pamt(&tdx_sysinfo))
+		return 0;
+
+	return tdx_sysinfo.tdmr.pamt_4k_entry_size * PTRS_PER_PTE / PAGE_SIZE;
+}
+
+/* Add PAMT memory for the given HPA */
+static u64 tdh_phymem_pamt_add(unsigned long hpa,
+			       struct list_head *pamt_pages)
+{
+	struct tdx_module_args args = {
+		.rcx = hpa,
+	};
+	struct page *page;
+	u64 *p;
+
+	WARN_ON_ONCE(!IS_ALIGNED(hpa & PAGE_MASK, PMD_SIZE));
+
+	/* Put pages from the list into registers in the args struct */
+	p = &args.rdx;
+	list_for_each_entry(page, pamt_pages, lru) {
+		/* Too many pages on the list */
+		if (WARN_ON_ONCE(p - &args.rcx >= sizeof(args)/sizeof(u64)))
+			return TDX_ERR_OPERAND_INVALID;
+
+		*p = page_to_phys(page);
+		p++;
+	}
+
+	return seamcall(TDH_PHYMEM_PAMT_ADD, &args);
+}
+
+/* Remove PAMT memory for the given HPA */
+static u64 tdh_phymem_pamt_remove(unsigned long hpa,
+				  struct list_head *pamt_pages)
+{
+	struct tdx_module_args args = {
+		.rcx = hpa,
+	};
+	struct page *page;
+	u64 *p, ret;
+
+	WARN_ON_ONCE(!IS_ALIGNED(hpa & PAGE_MASK, PMD_SIZE));
+
+	ret = seamcall_ret(TDH_PHYMEM_PAMT_REMOVE, &args);
+	if (ret)
+		return ret;
+
+	p = &args.rdx;
+	for (int i = 0; i < tdx_nr_pamt_pages(); i++) {
+		page = phys_to_page(*p);
+		list_add(&page->lru, pamt_pages);
+		p++;
+	}
+
+	return ret;
+}
+
+/* Serializes adding/removing PAMT memory */
+static DEFINE_SPINLOCK(pamt_lock);
+
+/* Free PAMT pages on the list */
+static void tdx_free_pamt_pages(struct list_head *pamt_pages)
+{
+	struct page *page;
+
+	while ((page = list_first_entry_or_null(pamt_pages, struct page, lru))) {
+		list_del(&page->lru);
+		reset_tdx_pages(page_to_phys(page), PAGE_SIZE);
+		__free_page(page);
+	}
+}
+
+/* Allocate tdx_nr_pamt_pages() pages and put them on the list */
+static int tdx_alloc_pamt_pages(struct list_head *pamt_pages)
+{
+	/*
+	 * The list must be empty.
+	 *
+	 * Having more than tdx_nr_pamt_pages() pages on the list will cause
+	 * problem in tdh_phymem_pamt_add().
+	 */
+	if (WARN_ON_ONCE(!list_empty(pamt_pages)))
+		return -EINVAL;
+
+	for (int i = 0; i < tdx_nr_pamt_pages(); i++) {
+		struct page *page = alloc_page(GFP_KERNEL);
+		if (!page) {
+			tdx_free_pamt_pages(pamt_pages);
+			return -ENOMEM;
+		}
+		list_add(&page->lru, pamt_pages);
+	}
+
+	return 0;
+}
+
+/*
+ * Add PAMT memory for the given HPA. Serialize against other tdx_pamt_add() and
+ * tdx_pamt_put().
+ *
+ * Returns >=0 on success. -errno on failure.
+ *
+ * Non-zero return value indicates that the pages on pamt_pages are unused
+ * and can be freed.
+ */
+static int tdx_pamt_add(atomic_t *pamt_refcount, unsigned long hpa,
+			struct list_head *pamt_pages)
+{
+	u64 err;
+
+	guard(spinlock)(&pamt_lock);
+
+	hpa = ALIGN_DOWN(hpa, PMD_SIZE);
+
+	/*
+	 * Lost race to other tdx_pamt_add(). Other task has already allocated
+	 * PAMT memory for the HPA.
+	 *
+	 * Return 1 to indicate that pamt_pages are unused and can be freed.
+	 */
+	if (atomic_read(pamt_refcount) != 0) {
+		atomic_inc(pamt_refcount);
+		return 1;
+	}
+
+	err = tdh_phymem_pamt_add(hpa | TDX_PS_2M, pamt_pages);
+
+	/* Check if current task won race against tdx_pamt_put() */
+	if (err && !IS_TDX_ERR_HPA_RANGE_NOT_FREE(err)) {
+		pr_err("TDH_PHYMEM_PAMT_ADD failed: %#llx\n", err);
+		return -EIO;
+	}
+
+	atomic_set(pamt_refcount, 1);
+
+	/*
+	 * Current task won race against tdx_pamt_put() and prevented it
+	 * from freeing PAMT memory.
+	 *
+	 * Return 1 to indicate that pamt_pages are unused and can be freed.
+	 */
+	if (IS_TDX_ERR_HPA_RANGE_NOT_FREE(err))
+		return 1;
+
+	return 0;
+}
+
+/* Bump PAMT refcount for the given page and allocate PAMT memory if needed */
+static int tdx_pamt_get(struct page *page, enum pg_level level)
+{
+	unsigned long hpa = page_to_phys(page);
+	atomic_t *pamt_refcount;
+	LIST_HEAD(pamt_pages);
+	int ret;
+
+	if (!tdx_supports_dynamic_pamt(&tdx_sysinfo))
+		return 0;
+
+	/*
+	 * Only PAMT_4K is allocated dynamically. PAMT_2M and PAMT_1G is
+	 * allocated statically on TDX module initialization.
+	 */
+	if (level != PG_LEVEL_4K)
+		return 0;
+
+	pamt_refcount = tdx_find_pamt_refcount(hpa);
+	WARN_ON_ONCE(atomic_read(pamt_refcount) < 0);
+
+	if (atomic_inc_not_zero(pamt_refcount))
+		return 0;
+
+	if (tdx_alloc_pamt_pages(&pamt_pages))
+		return -ENOMEM;
+
+	ret = tdx_pamt_add(pamt_refcount, hpa, &pamt_pages);
+	if (ret)
+		tdx_free_pamt_pages(&pamt_pages);
+
+	return ret >= 0 ? 0 : ret;
+}
+
+/*
+ * Drop PAMT refcount for the given page and free PAMT memory if it is no
+ * longer needed.
+ */
+static void tdx_pamt_put(struct page *page, enum pg_level level)
+{
+	unsigned long hpa = page_to_phys(page);
+	atomic_t *pamt_refcount;
+	LIST_HEAD(pamt_pages);
+	u64 err;
+
+	if (!tdx_supports_dynamic_pamt(&tdx_sysinfo))
+		return;
+
+	/*
+	 * Only PAMT_4K is allocated dynamically. PAMT_2M and PAMT_1G is
+	 * allocated statically on TDX module initialization.
+	 */
+	if (level != PG_LEVEL_4K)
+		return;
+
+	hpa = ALIGN_DOWN(hpa, PMD_SIZE);
+
+	pamt_refcount = tdx_find_pamt_refcount(hpa);
+	if (!atomic_dec_and_test(pamt_refcount))
+		return;
+
+	scoped_guard(spinlock, &pamt_lock) {
+		/* Lost race against tdx_pamt_add()? */
+		if (atomic_read(pamt_refcount) != 0)
+			return;
+
+		err = tdh_phymem_pamt_remove(hpa | TDX_PS_2M, &pamt_pages);
+
+		if (err) {
+			atomic_inc(pamt_refcount);
+			pr_err("TDH_PHYMEM_PAMT_REMOVE failed: %#llx\n", err);
+			return;
+		}
+	}
+
+	tdx_free_pamt_pages(&pamt_pages);
+}
+
+/* Allocate a page and make sure it is backed by PAMT memory */
+struct page *tdx_alloc_page(void)
+{
+	struct page *page;
+
+	page = alloc_page(GFP_KERNEL);
+	if (!page)
+		return NULL;
+
+	if (tdx_pamt_get(page, PG_LEVEL_4K)) {
+		__free_page(page);
+		return NULL;
+	}
+
+	return page;
+}
+EXPORT_SYMBOL_GPL(tdx_alloc_page);
+
+/* Free a page and release its PAMT memory */
+void tdx_free_page(struct page *page)
+{
+	if (!page)
+		return;
+
+	tdx_pamt_put(page, PG_LEVEL_4K);
+	__free_page(page);
+}
+EXPORT_SYMBOL_GPL(tdx_free_page);
