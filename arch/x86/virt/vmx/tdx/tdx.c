@@ -60,6 +60,8 @@ static struct tdmr_info_list tdx_tdmr_list;
  */
 static atomic_t *pamt_refcounts;
 
+static atomic_long_t tdx_pamt_count = ATOMIC_LONG_INIT(0);
+
 static enum tdx_module_status_t tdx_module_status;
 static DEFINE_MUTEX(tdx_module_lock);
 
@@ -2028,6 +2030,19 @@ int tdx_nr_pamt_pages(void)
 }
 EXPORT_SYMBOL_GPL(tdx_nr_pamt_pages);
 
+void tdx_meminfo(struct seq_file *m)
+{
+	unsigned long usage;
+
+	if (!cpu_feature_enabled(X86_FEATURE_TDX_HOST_PLATFORM))
+		return;
+
+	usage = atomic_long_read(&tdx_pamt_count) *
+		tdx_nr_pamt_pages() * PAGE_SIZE / SZ_1K;
+
+	seq_printf(m, "TDX:		%8lu kB\n", usage);
+}
+
 /* Add PAMT memory for the given HPA */
 static u64 tdh_phymem_pamt_add(unsigned long hpa,
 			       struct list_head *pamt_pages)
@@ -2036,7 +2051,7 @@ static u64 tdh_phymem_pamt_add(unsigned long hpa,
 		.rcx = hpa,
 	};
 	struct page *page;
-	u64 *p;
+	u64 *p, ret;
 
 	WARN_ON_ONCE(!IS_ALIGNED(hpa & PAGE_MASK, PMD_SIZE));
 
@@ -2051,7 +2066,12 @@ static u64 tdh_phymem_pamt_add(unsigned long hpa,
 		p++;
 	}
 
-	return seamcall(TDH_PHYMEM_PAMT_ADD, &args);
+	ret = seamcall(TDH_PHYMEM_PAMT_ADD, &args);
+
+	if (!ret)
+		atomic_long_inc(&tdx_pamt_count);
+
+	return ret;
 }
 
 /* Remove PAMT memory for the given HPA */
@@ -2069,6 +2089,8 @@ static u64 tdh_phymem_pamt_remove(unsigned long hpa,
 	ret = seamcall_ret(TDH_PHYMEM_PAMT_REMOVE, &args);
 	if (ret)
 		return ret;
+
+	atomic_long_dec(&tdx_pamt_count);
 
 	p = &args.rdx;
 	for (int i = 0; i < tdx_nr_pamt_pages(); i++) {
