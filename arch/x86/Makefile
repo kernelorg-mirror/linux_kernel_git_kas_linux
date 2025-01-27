@@ -179,7 +179,11 @@ else
         # default alignment which keep the stack *mis*aligned.
         # Furthermore an alignment to the register width reduces stack usage
         # and the number of alignment instructions.
-        KBUILD_CFLAGS += $(cc_stack_align8)
+	#
+	# APX requires 16 byte alignment to work properly with PUSH2/POP2
+	ifneq ($(CONFIG_X86_KERNEL_APX),y)
+		KBUILD_CFLAGS += $(cc_stack_align8)
+	endif
 
 	# Use -mskip-rax-setup if supported.
 	KBUILD_CFLAGS += $(call cc-option,-mskip-rax-setup)
