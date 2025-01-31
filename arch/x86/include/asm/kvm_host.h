@@ -1580,6 +1580,7 @@ struct kvm_arch {
 	struct kvm_mmu_memory_cache mmu_mirror_header_cache;
 	struct kvm_mmu_memory_cache mmu_mirror_page_cache;
 	struct kvm_mmu_memory_cache mmu_mirror_external_page_cache;
+	struct kvm_mmu_memory_cache pamt_page_cache;
 
 	gfn_t gfn_direct_bits;
 

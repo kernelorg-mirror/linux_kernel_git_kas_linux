@@ -1369,7 +1369,8 @@ retry:
 
 static int topup_mirror_caches(struct kvm *kvm)
 {
-	int r;
+	int r, nr;
+
 	r = kvm_mmu_topup_memory_cache(&kvm->arch.mmu_mirror_header_cache, 1);
 	if (r)
 		return r;
@@ -1382,14 +1383,24 @@ static int topup_mirror_caches(struct kvm *kvm)
 	if (r)
 		return r;
 
+	/* One for external_spt, one for TDH.MEM.PAGE.DEMOTE */
+	nr = tdx_nr_pamt_pages() * 2;
+
+	r = kvm_mmu_topup_memory_cache(&kvm->arch.pamt_page_cache, nr);
+	if (r)
+		return r;
+
 	return 0;
 }
 
 static bool need_topup_mirror_caches(struct kvm *kvm)
 {
+	int nr = tdx_nr_pamt_pages() * 2;
+
 	return kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_header_cache)  < 1 ||
 	       kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_page_cache) < 1 ||
-	       kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_external_page_cache) < 3;
+	       kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_external_page_cache) < 3 ||
+	       kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.pamt_page_cache) < nr;
 }
 
 /*
