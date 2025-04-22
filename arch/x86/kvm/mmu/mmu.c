@@ -4474,9 +4474,18 @@ static inline u8 kvm_max_level_for_order(int order)
 {
 	BUILD_BUG_ON(KVM_MAX_HUGEPAGE_LEVEL > PG_LEVEL_1G);
 
+#if 0
+	if (order != KVM_HPAGE_GFN_SHIFT(PG_LEVEL_1G) &&
+			order != KVM_HPAGE_GFN_SHIFT(PG_LEVEL_2M) &&
+			order != KVM_HPAGE_GFN_SHIFT(PG_LEVEL_4K)) {
+		pr_warn(">>> order = %d %d\n",
+			order, KVM_HPAGE_GFN_SHIFT(PG_LEVEL_4K));
+	}
+
 	KVM_MMU_WARN_ON(order != KVM_HPAGE_GFN_SHIFT(PG_LEVEL_1G) &&
 			order != KVM_HPAGE_GFN_SHIFT(PG_LEVEL_2M) &&
 			order != KVM_HPAGE_GFN_SHIFT(PG_LEVEL_4K));
+#endif
 
 	if (order >= KVM_HPAGE_GFN_SHIFT(PG_LEVEL_1G))
 		return PG_LEVEL_1G;
