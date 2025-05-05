@@ -1848,13 +1848,13 @@ static int tdx_spte_demote_private_spte(struct kvm *kvm, gfn_t gfn,
 
 	do {
 		err = tdh_mem_page_demote(&kvm_tdx->td, gpa, tdx_level, page,
-					  &entry, &level_state);
+					  NULL, &entry, &level_state);
 	} while (tdx_interrupted_restartable(err));
 
 	if (unlikely(tdx_operand_busy(err))) {
 		tdx_no_vcpus_enter_start(kvm);
 		err = tdh_mem_page_demote(&kvm_tdx->td, gpa, tdx_level, page,
-					  &entry, &level_state);
+					  NULL, &entry, &level_state);
 		tdx_no_vcpus_enter_stop(kvm);
 	}
 
