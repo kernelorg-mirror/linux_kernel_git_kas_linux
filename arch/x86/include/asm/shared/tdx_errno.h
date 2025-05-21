@@ -2,8 +2,10 @@
 #ifndef _X86_SHARED_TDX_ERRNO_H
 #define _X86_SHARED_TDX_ERRNO_H
 
+#include <asm/trapnr.h>
+
 /* Upper 32 bit of the TDX error code encodes the status */
-#define TDX_SEAMCALL_STATUS_MASK		0xFFFFFFFF00000000ULL
+#define TDX_STATUS_MASK				0xFFFFFFFF00000000ULL
 
 /*
  * TDX SEAMCALL Status Codes
@@ -52,4 +54,54 @@
 #define TDX_OPERAND_ID_SEPT			0x92
 #define TDX_OPERAND_ID_TD_EPOCH			0xa9
 
+#ifndef __ASSEMBLER__
+#include <linux/bits.h>
+#include <linux/types.h>
+
+static inline u64 TDX_STATUS(u64 err)
+{
+	return err & TDX_STATUS_MASK;
+}
+
+static inline bool IS_TDX_ERR_NON_RECOVERABLE(u64 err)
+{
+	return (err & TDX_ERR_NON_RECOVERABLE) == TDX_ERR_NON_RECOVERABLE;
+}
+
+static inline bool IS_TDX_ERR_SW_ERROR(u64 err)
+{
+	return (err & TDX_ERR_SW_ERROR) == TDX_ERR_SW_ERROR;
+}
+
+static inline bool IS_TDX_ERR_SEAMCALL_VMFAILINVALID(u64 err)
+{
+	return (err & TDX_ERR_SEAMCALL_VMFAILINVALID) ==
+		TDX_ERR_SEAMCALL_VMFAILINVALID;
+}
+
+static inline bool IS_TDX_ERR_SEAMCALL_GP(u64 err)
+{
+	return (err & TDX_ERR_SEAMCALL_GP) == TDX_ERR_SEAMCALL_GP;
+}
+
+static inline bool IS_TDX_ERR_SEAMCALL_UD(u64 err)
+{
+	return (err & TDX_ERR_SEAMCALL_UD) == TDX_ERR_SEAMCALL_UD;
+}
+
+
+#define DEFINE_TDX_ERRNO_HELPER(error)			\
+	static inline bool IS_##error(u64 err)	\
+	{						\
+		return TDX_STATUS(err) == error;	\
+	}
+
+DEFINE_TDX_ERRNO_HELPER(TDX_ERR_SUCCESS);
+DEFINE_TDX_ERRNO_HELPER(TDX_ERR_RND_NO_ENTROPY);
+DEFINE_TDX_ERRNO_HELPER(TDX_ERR_OPERAND_INVALID);
+DEFINE_TDX_ERRNO_HELPER(TDX_ERR_OPERAND_BUSY);
+DEFINE_TDX_ERRNO_HELPER(TDX_ERR_VCPU_NOT_ASSOCIATED);
+DEFINE_TDX_ERRNO_HELPER(TDX_ERR_FLUSHVP_NOT_DONE);
+
+#endif /* __ASSEMBLER__ */
 #endif /* _X86_SHARED_TDX_ERRNO_H */

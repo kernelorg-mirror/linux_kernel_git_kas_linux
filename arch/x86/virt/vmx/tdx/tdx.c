@@ -79,16 +79,16 @@ static inline int sc_retry_prerr(sc_func_t func, sc_err_func_t err_func,
 {
 	u64 sret = sc_retry(func, fn, args);
 
-	if (sret == TDX_ERR_SUCCESS)
+	if (IS_TDX_ERR_SUCCESS(sret))
 		return 0;
 
-	if (sret == TDX_ERR_SEAMCALL_VMFAILINVALID)
+	if (IS_TDX_ERR_SEAMCALL_VMFAILINVALID(sret))
 		return -ENODEV;
 
-	if (sret == TDX_ERR_SEAMCALL_GP)
+	if (IS_TDX_ERR_SEAMCALL_GP(sret))
 		return -EOPNOTSUPP;
 
-	if (sret == TDX_ERR_SEAMCALL_UD)
+	if (IS_TDX_ERR_SEAMCALL_UD(sret))
 		return -EACCES;
 
 	err_func(fn, sret, args);

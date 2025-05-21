@@ -33,10 +33,6 @@
 #define VE_GET_PORT_NUM(e)	((e) >> 16)
 #define VE_IS_IO_STRING(e)	((e) & BIT(4))
 
-/* TDX Module call error codes */
-#define TDCALL_RETURN_CODE(a)	((a) >> 32)
-#define TDCALL_INVALID_OPERAND	0xc0000100
-
 #define TDREPORT_SUBTYPE_0	0
 
 static atomic_long_t nr_shared;
@@ -127,7 +123,7 @@ int tdx_mcall_get_report0(u8 *reportdata, u8 *tdreport)
 
 	ret = __tdcall(TDG_MR_REPORT, &args);
 	if (ret) {
-		if (TDCALL_RETURN_CODE(ret) == TDCALL_INVALID_OPERAND)
+		if (IS_TDX_ERR_OPERAND_INVALID(ret))
 			return -EINVAL;
 		return -EIO;
 	}
@@ -276,7 +272,7 @@ static void reduce_unnecessary_ve(void)
 {
 	u64 err = tdg_vm_wr(TDCS_TD_CTLS, TD_CTLS_REDUCE_VE, TD_CTLS_REDUCE_VE);
 
-	if (err == TDX_ERR_SUCCESS)
+	if (IS_TDX_ERR_SUCCESS(err))
 		return;
 
 	/*
