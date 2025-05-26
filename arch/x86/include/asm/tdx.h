@@ -13,6 +13,10 @@
 #include <asm/tdx_errno.h>
 #include <asm/shared/tdx.h>
 
+/* Bit definitions of TDX_FEATURES0 metadata field */
+#define TDX_FEATURES0_NO_RBP_MOD		BIT_ULL(18)
+#define TDX_FEATURES0_CLFLUSH_BEFORE_ALLOC	BIT_ULL(23)
+
 #ifndef __ASSEMBLER__
 
 #include <uapi/asm/mce.h>
