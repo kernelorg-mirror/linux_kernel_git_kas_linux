@@ -159,7 +159,8 @@ int tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
 int tdx_sept_remove_private_spte(struct kvm *kvm, gfn_t gfn,
 				 enum pg_level level, kvm_pfn_t pfn);
 int tdx_sept_split_private_spt(struct kvm *kvm, gfn_t gfn, enum pg_level level,
-			       void *private_spt, bool mmu_lock_shared);
+			       kvm_pfn_t pfn_for_gfn, void *private_spt,
+			       bool mmu_lock_shared);
 
 void tdx_flush_tlb_current(struct kvm_vcpu *vcpu);
 void tdx_flush_tlb_all(struct kvm_vcpu *vcpu);
@@ -228,6 +229,7 @@ static inline int tdx_sept_remove_private_spte(struct kvm *kvm, gfn_t gfn,
 
 static inline int tdx_sept_split_private_spt(struct kvm *kvm, gfn_t gfn,
 					     enum pg_level level,
+					     kvm_pfn_t pfn_for_gfn,
 					     void *private_spt,
 					     bool mmu_lock_shared)
 {
