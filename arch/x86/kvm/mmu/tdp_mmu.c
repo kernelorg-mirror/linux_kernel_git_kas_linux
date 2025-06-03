@@ -326,7 +326,6 @@ static void handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 
 static int tdp_mmu_split_huge_page(struct kvm *kvm, struct tdp_iter *iter,
 				   struct kvm_mmu_page *sp, bool shared);
-static struct kvm_mmu_page *tdp_mmu_alloc_sp_for_split(bool mirror);
 static void *get_external_spt(gfn_t gfn, u64 new_spte, int level);
 
 static void tdp_account_mmu_page(struct kvm *kvm, struct kvm_mmu_page *sp)
@@ -1365,14 +1364,39 @@ retry:
 	return ret;
 }
 
+static int topup_mirror_caches(struct kvm *kvm)
+{
+	int r;
+	r = kvm_mmu_topup_memory_cache(&kvm->arch.mmu_mirror_header_cache, 1);
+	if (r)
+		return r;
+
+	r = kvm_mmu_topup_memory_cache(&kvm->arch.mmu_mirror_page_cache, 1);
+	if (r)
+		return r;
+
+	r = kvm_mmu_topup_memory_cache(&kvm->arch.mmu_mirror_external_page_cache, 3);
+	if (r)
+		return r;
+
+	return 0;
+}
+
+static bool need_topup_mirror_caches(struct kvm *kvm)
+{
+	return kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_header_cache)  < 1 ||
+	       kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_page_cache) < 1 ||
+	       kvm_mmu_memory_cache_nr_free_objects(&kvm->arch.mmu_mirror_external_page_cache) < 3;
+}
+
 /*
  * Split large leafs at the boundary of the specified range for the mirror root
  */
 static int tdp_mmu_split_boundary_leafs(struct kvm *kvm, struct kvm_mmu_page *root,
 					gfn_t start, gfn_t end, bool can_yield, bool *flush)
 {
-	struct kvm_mmu_page *sp = NULL;
 	struct tdp_iter iter;
+	int r;
 
 	WARN_ON_ONCE(!can_yield);
 
@@ -1386,6 +1410,7 @@ static int tdp_mmu_split_boundary_leafs(struct kvm *kvm, struct kvm_mmu_page *ro
 	rcu_read_lock();
 
 	for_each_tdp_pte_min_level(iter, kvm, root, PG_LEVEL_4K, start, end) {
+		struct kvm_mmu_page *sp = NULL;
 retry:
 		if (can_yield &&
 		    tdp_mmu_iter_cond_resched(kvm, &iter, *flush, false)) {
@@ -1398,31 +1423,36 @@ retry:
 		    !iter_split_required(kvm, root, &iter, start, end))
 			continue;
 
-		if (!sp) {
+		if (need_topup_mirror_caches(kvm)) {
 			rcu_read_unlock();
 
 			write_unlock(&kvm->mmu_lock);
 
-			sp = tdp_mmu_alloc_sp_for_split(true);
-
-			write_lock(&kvm->mmu_lock);
-
-			if (!sp) {
+			r = topup_mirror_caches(kvm);
+			if (r) {
 				trace_kvm_mmu_split_huge_page(iter.gfn, iter.old_spte,
 							      iter.level, -ENOMEM);
 				return -ENOMEM;
 			}
+			write_lock(&kvm->mmu_lock);
 			rcu_read_lock();
+
+			if (need_topup_mirror_caches(kvm))
+				goto retry;
 
 			iter.yielded = true;
 			continue;
 		}
+
+		sp = kvm_mmu_memory_cache_alloc(&kvm->arch.mmu_mirror_header_cache);
+		sp->spt = kvm_mmu_memory_cache_alloc(&kvm->arch.mmu_mirror_page_cache);
+		sp->external_spt = kvm_mmu_memory_cache_alloc(&kvm->arch.mmu_mirror_external_page_cache);
+
 		tdp_mmu_init_child_sp(sp, &iter);
 
 		if (tdp_mmu_split_huge_page(kvm, &iter, sp, false))
 			goto retry;
 
-		sp = NULL;
 		/*
 		 * Set yielded in case after splitting to a lower level,
 		 * the new iter requires furter splitting.
@@ -1433,9 +1463,6 @@ retry:
 
 	rcu_read_unlock();
 
-	/* Leave it here though it should be impossible for the mirror root */
-	if (sp)
-		tdp_mmu_free_sp(sp);
 	return 0;
 }
 

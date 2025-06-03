@@ -6712,6 +6712,10 @@ void kvm_mmu_init_vm(struct kvm *kvm)
 
 	kvm->arch.split_desc_cache.kmem_cache = pte_list_desc_cache;
 	kvm->arch.split_desc_cache.gfp_zero = __GFP_ZERO;
+
+	kvm->arch.mmu_mirror_header_cache.kmem_cache = mmu_page_header_cache;
+	kvm->arch.mmu_mirror_page_cache.init_value = SHADOW_NONPRESENT_VALUE;
+	kvm->arch.mmu_mirror_external_page_cache.gfp_zero = __GFP_ZERO;
 }
 
 static void mmu_free_vm_memory_caches(struct kvm *kvm)
@@ -6719,6 +6723,9 @@ static void mmu_free_vm_memory_caches(struct kvm *kvm)
 	kvm_mmu_free_memory_cache(&kvm->arch.split_desc_cache);
 	kvm_mmu_free_memory_cache(&kvm->arch.split_page_header_cache);
 	kvm_mmu_free_memory_cache(&kvm->arch.split_shadow_page_cache);
+	kvm_mmu_free_memory_cache(&kvm->arch.mmu_mirror_header_cache);
+	kvm_mmu_free_memory_cache(&kvm->arch.mmu_mirror_page_cache);
+	kvm_mmu_free_memory_cache(&kvm->arch.mmu_mirror_external_page_cache);
 }
 
 void kvm_mmu_uninit_vm(struct kvm *kvm)
