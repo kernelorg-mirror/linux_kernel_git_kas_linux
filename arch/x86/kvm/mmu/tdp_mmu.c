@@ -1450,8 +1450,8 @@ retry:
 
 		tdp_mmu_init_child_sp(sp, &iter);
 
-		if (tdp_mmu_split_huge_page(kvm, &iter, sp, false))
-			goto retry;
+		/* With write mmu_lock, the split is not expected to fail */
+		tdp_mmu_split_huge_page(kvm, &iter, sp, false);
 
 		/*
 		 * Set yielded in case after splitting to a lower level,
