@@ -95,7 +95,7 @@
 	 * or P-SEAMLDR is busy with another SEAMCALL.  %rax is not
 	 * changed in this case.
 	 *
-	 * Set %rax to TDX_SEAMCALL_VMFAILINVALID for VMfailInvalid.
+	 * Set %rax to TDX_ERR_SEAMCALL_VMFAILINVALID for VMfailInvalid.
 	 * This value will never be used as actual SEAMCALL error code as
 	 * it is from the Reserved status code class.
 	 */
@@ -192,19 +192,19 @@
 
 .if \host
 .Lseamcall_vmfailinvalid\@:
-	mov $TDX_SEAMCALL_VMFAILINVALID, %rax
+	mov $TDX_ERR_SEAMCALL_VMFAILINVALID, %rax
 	jmp .Lseamcall_fail\@
 
 .Lseamcall_trap\@:
 	/*
 	 * SEAMCALL caused #GP or #UD.  By reaching here RAX contains
 	 * the trap number.  Convert the trap number to the TDX error
-	 * code by setting TDX_SW_ERROR to the high 32-bits of RAX.
+	 * code by setting TDX_ERR_SW_ERROR to the high 32-bits of RAX.
 	 *
-	 * Note cannot OR TDX_SW_ERROR directly to RAX as OR instruction
+	 * Note cannot OR TDX_ERR_SW_ERROR directly to RAX as OR instruction
 	 * only accepts 32-bit immediate at most.
 	 */
-	movq $TDX_SW_ERROR, %rdi
+	movq $TDX_ERR_SW_ERROR, %rdi
 	orq  %rdi, %rax
 
 .Lseamcall_fail\@:

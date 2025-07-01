@@ -196,7 +196,7 @@ static int init_kvm_tdx_caps(const struct tdx_sys_info_td_conf *td_conf,
 
 /*
  * Some SEAMCALLs acquire the TDX module globally, and can fail with
- * TDX_OPERAND_BUSY.  Use a global mutex to serialize these SEAMCALLs.
+ * TDX_ERR_OPERAND_BUSY.  Use a global mutex to serialize these SEAMCALLs.
  */
 static DEFINE_MUTEX(tdx_lock);
 
@@ -204,7 +204,7 @@ static atomic_t nr_configured_hkid;
 
 static bool tdx_operand_busy(u64 err)
 {
-	return (err & TDX_SEAMCALL_STATUS_MASK) == TDX_OPERAND_BUSY;
+	return (err & TDX_SEAMCALL_STATUS_MASK) == TDX_ERR_OPERAND_BUSY;
 }
 
 
@@ -323,7 +323,7 @@ static int __tdx_reclaim_page(struct page *page)
 	err = tdh_phymem_page_reclaim(page, &rcx, &rdx, &r8);
 
 	/*
-	 * No need to check for TDX_OPERAND_BUSY; all TD pages are freed
+	 * No need to check for TDX_ERR_OPERAND_BUSY; all TD pages are freed
 	 * before the HKID is released and control pages have also been
 	 * released at this point, so there is no possibility of contention.
 	 */
@@ -393,7 +393,7 @@ static void tdx_flush_vp(void *_arg)
 		 * migration.  No other thread uses TDVPR in those cases.
 		 */
 		err = tdh_vp_flush(&to_tdx(vcpu)->vp);
-		if (unlikely(err && err != TDX_VCPU_NOT_ASSOCIATED)) {
+		if (unlikely(err && err != TDX_ERR_VCPU_NOT_ASSOCIATED)) {
 			/*
 			 * This function is called in IPI context. Do not use
 			 * printk to avoid console semaphore.
@@ -457,10 +457,10 @@ static void smp_func_do_phymem_cache_wb(void *unused)
 		resume = !!err;
 		err = tdh_phymem_cache_wb(resume);
 		switch (err) {
-		case TDX_INTERRUPTED_RESUMABLE:
+		case TDX_ERR_INTERRUPTED_RESUMABLE:
 			continue;
-		case TDX_NO_HKID_READY_TO_WBCACHE:
-			err = TDX_SUCCESS; /* Already done by other thread */
+		case TDX_ERR_NO_HKID_READY_TO_WBCACHE:
+			err = TDX_ERR_SUCCESS; /* Already done by other thread */
 			fallthrough;
 		default:
 			goto out;
@@ -494,7 +494,7 @@ void tdx_mmu_release_hkid(struct kvm *kvm)
 
 	/*
 	 * TDH.PHYMEM.CACHE.WB tries to acquire the TDX module global lock
-	 * and can fail with TDX_OPERAND_BUSY when it fails to get the lock.
+	 * and can fail with TDX_ERR_OPERAND_BUSY when it fails to get the lock.
 	 * Multiple TDX guests can be destroyed simultaneously. Take the
 	 * mutex to prevent it from getting error.
 	 */
@@ -506,7 +506,7 @@ void tdx_mmu_release_hkid(struct kvm *kvm)
 	 * associations, as all vCPU fds have been released at this stage.
 	 */
 	err = tdh_mng_vpflushdone(&kvm_tdx->td);
-	if (err == TDX_FLUSHVP_NOT_DONE)
+	if (err == TDX_ERR_FLUSHVP_NOT_DONE)
 		goto out;
 	if (KVM_BUG_ON(err, kvm)) {
 		pr_tdx_error(TDH_MNG_VPFLUSHDONE, err);
@@ -608,7 +608,7 @@ static int tdx_do_tdh_mng_key_config(void *param)
 	struct kvm_tdx *kvm_tdx = param;
 	u64 err;
 
-	/* TDX_RND_NO_ENTROPY related retries are handled by sc_retry() */
+	/* TDX_ERR_RND_NO_ENTROPY related retries are handled by sc_retry() */
 	err = tdh_mng_key_config(&kvm_tdx->td);
 
 	if (KVM_BUG_ON(err, &kvm_tdx->kvm)) {
@@ -896,11 +896,11 @@ static __always_inline u32 tdx_to_vmx_exit_reason(struct kvm_vcpu *vcpu)
 	u32 exit_reason;
 
 	switch (tdx->vp_enter_ret & TDX_SEAMCALL_STATUS_MASK) {
-	case TDX_SUCCESS:
-	case TDX_NON_RECOVERABLE_VCPU:
-	case TDX_NON_RECOVERABLE_TD:
-	case TDX_NON_RECOVERABLE_TD_NON_ACCESSIBLE:
-	case TDX_NON_RECOVERABLE_TD_WRONG_APIC_MODE:
+	case TDX_ERR_SUCCESS:
+	case TDX_ERR_NON_RECOVERABLE_VCPU:
+	case TDX_ERR_NON_RECOVERABLE_TD:
+	case TDX_ERR_NON_RECOVERABLE_TD_NON_ACCESSIBLE:
+	case TDX_ERR_NON_RECOVERABLE_TD_WRONG_APIC_MODE:
 		break;
 	default:
 		return -1u;
@@ -959,7 +959,7 @@ static fastpath_t tdx_exit_handlers_fastpath(struct kvm_vcpu *vcpu)
 	u64 vp_enter_ret = to_tdx(vcpu)->vp_enter_ret;
 
 	/*
-	 * TDX_OPERAND_BUSY could be returned for SEPT due to 0-step mitigation
+	 * TDX_ERR_OPERAND_BUSY could be returned for SEPT due to 0-step mitigation
 	 * or for TD EPOCH due to contention with TDH.MEM.TRACK on TDH.VP.ENTER.
 	 *
 	 * When KVM requests KVM_REQ_OUTSIDE_GUEST_MODE, which has both
@@ -1066,7 +1066,7 @@ fastpath_t tdx_vcpu_run(struct kvm_vcpu *vcpu, bool force_immediate_exit)
 	if (unlikely(tdx->vp_enter_ret == EXIT_REASON_EPT_MISCONFIG))
 		return EXIT_FASTPATH_NONE;
 
-	if (unlikely((tdx->vp_enter_ret & TDX_SW_ERROR) == TDX_SW_ERROR))
+	if (unlikely((tdx->vp_enter_ret & TDX_ERR_SW_ERROR) == TDX_ERR_SW_ERROR))
 		return EXIT_FASTPATH_NONE;
 
 	if (unlikely(vmx_get_exit_reason(vcpu).basic == EXIT_REASON_MCE_DURING_VMENTRY))
@@ -1108,7 +1108,7 @@ static int tdx_handle_exception_nmi(struct kvm_vcpu *vcpu)
 
 	/*
 	 * Machine checks are handled by handle_exception_irqoff(), or by
-	 * tdx_handle_exit() with TDX_NON_RECOVERABLE set if a #MC occurs on
+	 * tdx_handle_exit() with TDX_ERR_NON_RECOVERABLE set if a #MC occurs on
 	 * VM-Entry.  NMIs are handled by tdx_vcpu_enter_exit().
 	 */
 	if (is_nmi(intr_info) || is_machine_check(intr_info))
@@ -1652,8 +1652,8 @@ int tdx_sept_link_private_spt(struct kvm *kvm, gfn_t gfn,
  *
  * Since tdh_mem_sept_add() must have been invoked successfully before a
  * non-leaf entry present in the mirrored page table, the SEPT ZAP related
- * SEAMCALLs should not encounter err TDX_EPT_WALK_FAILED. They should instead
- * find TDX_EPT_ENTRY_STATE_INCORRECT due to an empty leaf entry found in the
+ * SEAMCALLs should not encounter err TDX_ERR_EPT_WALK_FAILED. They should instead
+ * find TDX_ERR_EPT_ENTRY_STATE_INCORRECT due to an empty leaf entry found in the
  * SEPT.
  *
  * Further check if the returned entry from SEPT walking is with RWX permissions
@@ -1669,7 +1669,7 @@ static int tdx_is_sept_zap_err_due_to_premap(struct kvm_tdx *kvm_tdx, u64 err,
 	if (!err || kvm_tdx->state == TD_STATE_RUNNABLE)
 		return false;
 
-	if (err != (TDX_EPT_ENTRY_STATE_INCORRECT | TDX_OPERAND_ID_RCX))
+	if (err != (TDX_ERR_EPT_ENTRY_STATE_INCORRECT | TDX_OPERAND_ID_RCX))
 		return false;
 
 	if ((is_last_spte(entry, level) && (entry & VMX_EPT_RWX_MASK)))
@@ -1880,7 +1880,7 @@ static int tdx_handle_ept_violation(struct kvm_vcpu *vcpu)
 	 * KVM may return RET_PF_RETRY for private GPA due to
 	 * - contentions when atomically updating SPTEs of the mirror page table
 	 * - in-progress GFN invalidation or memslot removal.
-	 * - TDX_OPERAND_BUSY error from TDH.MEM.PAGE.AUG or TDH.MEM.SEPT.ADD,
+	 * - TDX_ERR_OPERAND_BUSY error from TDH.MEM.PAGE.AUG or TDH.MEM.SEPT.ADD,
 	 *   caused by contentions with TDH.VP.ENTER (with zero-step mitigation)
 	 *   or certain TDCALLs.
 	 *
@@ -1954,10 +1954,10 @@ int tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
 	}
 
 	/*
-	 * Handle TDX SW errors, including TDX_SEAMCALL_UD, TDX_SEAMCALL_GP and
-	 * TDX_SEAMCALL_VMFAILINVALID.
+	 * Handle TDX SW errors, including TDX_ERR_SEAMCALL_UD, TDX_ERR_SEAMCALL_GP and
+	 * TDX_ERR_SEAMCALL_VMFAILINVALID.
 	 */
-	if (unlikely((vp_enter_ret & TDX_SW_ERROR) == TDX_SW_ERROR)) {
+	if (unlikely((vp_enter_ret & TDX_ERR_SW_ERROR) == TDX_ERR_SW_ERROR)) {
 		KVM_BUG_ON(!kvm_rebooting, vcpu->kvm);
 		goto unhandled_exit;
 	}
@@ -1965,24 +1965,24 @@ int tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
 	if (unlikely(tdx_failed_vmentry(vcpu))) {
 		/*
 		 * If the guest state is protected, that means off-TD debug is
-		 * not enabled, TDX_NON_RECOVERABLE must be set.
+		 * not enabled, TDX_ERR_NON_RECOVERABLE must be set.
 		 */
 		WARN_ON_ONCE(vcpu->arch.guest_state_protected &&
-				!(vp_enter_ret & TDX_NON_RECOVERABLE));
+				!(vp_enter_ret & TDX_ERR_NON_RECOVERABLE));
 		vcpu->run->exit_reason = KVM_EXIT_FAIL_ENTRY;
 		vcpu->run->fail_entry.hardware_entry_failure_reason = exit_reason.full;
 		vcpu->run->fail_entry.cpu = vcpu->arch.last_vmentry_cpu;
 		return 0;
 	}
 
-	if (unlikely(vp_enter_ret & (TDX_ERROR | TDX_NON_RECOVERABLE)) &&
+	if (unlikely(vp_enter_ret & (TDX_ERR_ERROR | TDX_ERR_NON_RECOVERABLE)) &&
 		exit_reason.basic != EXIT_REASON_TRIPLE_FAULT) {
 		kvm_pr_unimpl("TD vp_enter_ret 0x%llx\n", vp_enter_ret);
 		goto unhandled_exit;
 	}
 
 	WARN_ON_ONCE(exit_reason.basic != EXIT_REASON_TRIPLE_FAULT &&
-		     (vp_enter_ret & TDX_SEAMCALL_STATUS_MASK) != TDX_SUCCESS);
+		     (vp_enter_ret & TDX_SEAMCALL_STATUS_MASK) != TDX_ERR_SUCCESS);
 
 	switch (exit_reason.basic) {
 	case EXIT_REASON_TRIPLE_FAULT:
@@ -2420,7 +2420,7 @@ static int __tdx_td_init(struct kvm *kvm, struct td_params *td_params,
 
 	/*
 	 * TDH.MNG.CREATE tries to grab the global TDX module and fails
-	 * with TDX_OPERAND_BUSY when it fails to grab.  Take the global
+	 * with TDX_ERR_OPERAND_BUSY when it fails to grab.  Take the global
 	 * lock to prevent it from failure.
 	 */
 	mutex_lock(&tdx_lock);
@@ -2428,7 +2428,7 @@ static int __tdx_td_init(struct kvm *kvm, struct td_params *td_params,
 	err = tdh_mng_create(&kvm_tdx->td, kvm_tdx->hkid);
 	mutex_unlock(&tdx_lock);
 
-	if (err == TDX_RND_NO_ENTROPY) {
+	if (err == TDX_ERR_RND_NO_ENTROPY) {
 		ret = -EAGAIN;
 		goto free_packages;
 	}
@@ -2449,7 +2449,7 @@ static int __tdx_td_init(struct kvm *kvm, struct td_params *td_params,
 		 * Program the memory controller in the package with an
 		 * encryption key associated to a TDX private host key id
 		 * assigned to this TDR.  Concurrent operations on same memory
-		 * controller results in TDX_OPERAND_BUSY. No locking needed
+		 * controller results in TDX_ERR_OPERAND_BUSY. No locking needed
 		 * beyond the cpus_read_lock() above as it serializes against
 		 * hotplug and the first online CPU of the package is always
 		 * used. We never have two CPUs in the same socket trying to
@@ -2470,7 +2470,7 @@ static int __tdx_td_init(struct kvm *kvm, struct td_params *td_params,
 	kvm_tdx->td.tdcs_pages = tdcs_pages;
 	for (i = 0; i < kvm_tdx->td.tdcs_nr_pages; i++) {
 		err = tdh_mng_addcx(&kvm_tdx->td, tdcs_pages[i]);
-		if (err == TDX_RND_NO_ENTROPY) {
+		if (err == TDX_ERR_RND_NO_ENTROPY) {
 			/* Here it's hard to allow userspace to retry. */
 			ret = -EAGAIN;
 			goto teardown;
@@ -2483,7 +2483,7 @@ static int __tdx_td_init(struct kvm *kvm, struct td_params *td_params,
 	}
 
 	err = tdh_mng_init(&kvm_tdx->td, __pa(td_params), &rcx);
-	if ((err & TDX_SEAMCALL_STATUS_MASK) == TDX_OPERAND_INVALID) {
+	if ((err & TDX_SEAMCALL_STATUS_MASK) == TDX_ERR_OPERAND_INVALID) {
 		/*
 		 * Because a user gives operands, don't warn.
 		 * Return a hint to the user because it's sometimes hard for the
@@ -3501,7 +3501,7 @@ int __init tdx_bringup(void)
 	 * So, for simplicity do everything in __tdx_bringup(); the first
 	 * SEAMCALL will return -ENODEV when the module is not loaded.  The
 	 * only complication is having to make sure that initialization
-	 * SEAMCALLs don't return TDX_SEAMCALL_VMFAILINVALID in other
+	 * SEAMCALLs don't return TDX_ERR_SEAMCALL_VMFAILINVALID in other
 	 * cases.
 	 */
 	r = __tdx_bringup();

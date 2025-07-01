@@ -92,7 +92,7 @@ static inline u64 sc_retry(sc_func_t func, u64 fn,
 
 	do {
 		ret = func(fn, args);
-	} while (ret == TDX_RND_NO_ENTROPY && --retry);
+	} while (ret == TDX_ERR_RND_NO_ENTROPY && --retry);
 
 	return ret;
 }
