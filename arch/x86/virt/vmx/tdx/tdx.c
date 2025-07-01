@@ -5,7 +5,6 @@
  * Intel Trusted Domain Extensions (TDX) support
  */
 
-#include "asm/page_types.h"
 #define pr_fmt(fmt)	"virt/tdx: " fmt
 
 #include <linux/types.h>
