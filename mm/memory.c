@@ -6065,6 +6065,27 @@ static vm_fault_t do_uffd_rwp(struct vm_fault *vmf)
 	/* Feed NUMA stats even though we skip NUMA scanning on this VMA */
 	uffd_rwp_feed_numa_fault(vmf);
 
+	if (userfaultfd_rwp_async(vmf->vma)) {
+		pte_t pte;
+
+		spin_lock(vmf->ptl);
+		if (unlikely(!pte_same(ptep_get(vmf->pte), vmf->orig_pte))) {
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			return 0;
+		}
+		pte = pte_modify(vmf->orig_pte, vmf->vma->vm_page_prot);
+		pte = pte_mkyoung(pte);
+		if (!pte_write(pte) &&
+		    vma_wants_manual_pte_write_upgrade(vmf->vma) &&
+		    can_change_pte_writable(vmf->vma, vmf->address, pte))
+			pte = pte_mkwrite(pte, vmf->vma);
+		set_pte_at(vmf->vma->vm_mm, vmf->address, vmf->pte, pte);
+		update_mmu_cache(vmf->vma, vmf->address, vmf->pte);
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+		return 0;
+	}
+
+	/* Sync mode: unmap PTE and deliver to userfaultfd handler */
 	pte_unmap(vmf->pte);
 	return handle_userfault(vmf, VM_UFFD_RWP);
 }

@@ -6072,6 +6072,27 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	 */
 	if (pte_protnone(vmf.orig_pte) && vma_is_accessible(vma) &&
 	    userfaultfd_rwp(vma)) {
+		if (userfaultfd_rwp_async(vma)) {
+			spinlock_t *ptl = huge_pte_lock(h, mm, vmf.pte);
+			pte_t pte = huge_ptep_get(mm, vmf.address, vmf.pte);
+
+			if (pte_protnone(pte)) {
+				unsigned int shift = huge_page_shift(h);
+
+				pte = huge_pte_modify(pte, vma->vm_page_prot);
+				pte = arch_make_huge_pte(pte, shift,
+							 vma->vm_flags);
+				pte = pte_mkyoung(pte);
+				set_huge_pte_at(mm, vmf.address, vmf.pte,
+						pte, huge_page_size(h));
+				update_mmu_cache(vma, vmf.address,
+						 vmf.pte);
+			}
+			spin_unlock(ptl);
+			ret = 0;
+			goto out_mutex;
+		}
+		/* Sync: drop hugetlb locks before blocking in handle_userfault */
 		return hugetlb_handle_userfault(&vmf, mapping, VM_UFFD_RWP);
 	}
 

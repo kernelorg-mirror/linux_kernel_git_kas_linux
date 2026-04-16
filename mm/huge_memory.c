@@ -2194,7 +2194,30 @@ static void uffd_rwp_feed_numa_fault_pmd(struct vm_fault *vmf)
 
 vm_fault_t do_huge_pmd_uffd_rwp(struct vm_fault *vmf)
 {
+	struct vm_area_struct *vma = vmf->vma;
+
 	uffd_rwp_feed_numa_fault_pmd(vmf);
+
+	if (userfaultfd_rwp_async(vma)) {
+		pmd_t pmd;
+
+		vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
+		if (unlikely(!pmd_same(pmdp_get(vmf->pmd), vmf->orig_pmd))) {
+			spin_unlock(vmf->ptl);
+			return 0;
+		}
+		pmd = pmd_modify(vmf->orig_pmd, vma->vm_page_prot);
+		pmd = pmd_mkyoung(pmd);
+		if (!pmd_write(pmd) &&
+		    vma_wants_manual_pte_write_upgrade(vma) &&
+		    can_change_pmd_writable(vma, vmf->address, pmd))
+			pmd = pmd_mkwrite(pmd, vma);
+		set_pmd_at(vma->vm_mm, vmf->address & HPAGE_PMD_MASK,
+			   vmf->pmd, pmd);
+		update_mmu_cache_pmd(vma, vmf->address, vmf->pmd);
+		spin_unlock(vmf->ptl);
+		return 0;
+	}
 
 	return handle_userfault(vmf, VM_UFFD_RWP);
 }
