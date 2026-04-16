@@ -1841,6 +1841,62 @@ static int userfaultfd_rwprotect(struct userfaultfd_ctx *ctx,
 	return ret;
 }
 
+/* Async features that can be toggled at runtime via UFFDIO_SET_MODE */
+#define UFFD_FEATURE_TOGGLEABLE	(UFFD_FEATURE_WP_ASYNC | \
+				 UFFD_FEATURE_RWP_ASYNC)
+
+static int userfaultfd_set_mode(struct userfaultfd_ctx *ctx,
+				unsigned long arg)
+{
+	struct uffdio_set_mode mode;
+	struct mm_struct *mm = ctx->mm;
+
+	if (copy_from_user(&mode, (void __user *)arg, sizeof(mode)))
+		return -EFAULT;
+
+	/* enable and disable must not overlap */
+	if (mode.enable & mode.disable)
+		return -EINVAL;
+
+	/* only toggleable features are allowed */
+	if ((mode.enable | mode.disable) & ~UFFD_FEATURE_TOGGLEABLE)
+		return -EINVAL;
+
+	if (!mmget_not_zero(mm))
+		return -ESRCH;
+
+	/* WP_ASYNC relies on WP_UNPOPULATED */
+	if (mode.enable & UFFD_FEATURE_WP_ASYNC)
+		mode.enable |= UFFD_FEATURE_WP_UNPOPULATED;
+
+	/*
+	 * mmap_write_lock serializes against all page faults.
+	 * After we release, no in-flight faults from the old mode exist.
+	 */
+	mmap_write_lock(mm);
+	ctx->features |= mode.enable;
+	ctx->features &= ~mode.disable;
+	mmap_write_unlock(mm);
+
+	/*
+	 * If switching to async, wake threads blocked in handle_userfault().
+	 * They will retry the fault and auto-resolve under the new mode.
+	 * len=0 means wake all pending faults on this context.
+	 */
+	if (mode.enable & (UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_RWP_ASYNC)) {
+		struct userfaultfd_wake_range range = { .len = 0 };
+
+		spin_lock_irq(&ctx->fault_pending_wqh.lock);
+		__wake_up_locked_key(&ctx->fault_pending_wqh, TASK_NORMAL,
+				     &range);
+		__wake_up(&ctx->fault_wqh, TASK_NORMAL, 1, &range);
+		spin_unlock_irq(&ctx->fault_pending_wqh.lock);
+	}
+
+	mmput(mm);
+	return 0;
+}
+
 static int userfaultfd_continue(struct userfaultfd_ctx *ctx, unsigned long arg)
 {
 	__s64 ret;
@@ -2163,6 +2219,9 @@ static long userfaultfd_ioctl(struct file *file, unsigned cmd,
 		break;
 	case UFFDIO_RWPROTECT:
 		ret = userfaultfd_rwprotect(ctx, arg);
+		break;
+	case UFFDIO_SET_MODE:
+		ret = userfaultfd_set_mode(ctx, arg);
 		break;
 	}
 	return ret;
