@@ -2329,7 +2329,7 @@ static int pagemap_release(struct inode *inode, struct file *file)
 				 PAGE_IS_FILE |	PAGE_IS_PRESENT |	\
 				 PAGE_IS_SWAPPED | PAGE_IS_PFNZERO |	\
 				 PAGE_IS_HUGE | PAGE_IS_SOFT_DIRTY |	\
-				 PAGE_IS_GUARD)
+				 PAGE_IS_GUARD | PAGE_IS_PROT_NONE)
 #define PM_SCAN_FLAGS		(PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC)
 
 struct pagemap_scan_private {
@@ -2353,6 +2353,9 @@ static unsigned long pagemap_page_category(struct pagemap_scan_private *p,
 		struct page *page;
 
 		categories = PAGE_IS_PRESENT;
+
+		if (pte_protnone(pte))
+			categories |= PAGE_IS_PROT_NONE;
 
 		if (!pte_uffd_wp(pte))
 			categories |= PAGE_IS_WRITTEN;
@@ -2422,6 +2425,10 @@ static unsigned long pagemap_thp_category(struct pagemap_scan_private *p,
 		struct page *page;
 
 		categories |= PAGE_IS_PRESENT;
+
+		if (pmd_protnone(pmd))
+			categories |= PAGE_IS_PROT_NONE;
+
 		if (!pmd_uffd_wp(pmd))
 			categories |= PAGE_IS_WRITTEN;
 
@@ -2485,6 +2492,9 @@ static unsigned long pagemap_hugetlb_category(pte_t pte)
 	 */
 	if (pte_present(pte)) {
 		categories |= PAGE_IS_PRESENT;
+
+		if (pte_protnone(pte))
+			categories |= PAGE_IS_PROT_NONE;
 
 		if (!huge_pte_uffd_wp(pte))
 			categories |= PAGE_IS_WRITTEN;
