@@ -217,6 +217,8 @@ static inline struct uffd_msg userfault_msg(unsigned long address,
 		msg.arg.pagefault.flags |= UFFD_PAGEFAULT_FLAG_WP;
 	if (reason & VM_UFFD_MINOR)
 		msg.arg.pagefault.flags |= UFFD_PAGEFAULT_FLAG_MINOR;
+	if (reason & VM_UFFD_RWP)
+		msg.arg.pagefault.flags |= UFFD_PAGEFAULT_FLAG_RWP;
 	if (features & UFFD_FEATURE_THREAD_ID)
 		msg.arg.pagefault.feat.ptid = task_pid_vnr(current);
 	return msg;
@@ -258,6 +260,9 @@ static inline bool userfaultfd_huge_must_wait(struct userfaultfd_ctx *ctx,
 	 * resolve the fault.
 	 */
 	if (!huge_pte_write(pte) && (reason & VM_UFFD_WP))
+		return true;
+	/* PTE is still RW-protected (protnone), wait for resolution. */
+	if (pte_protnone(pte) && (reason & VM_UFFD_RWP))
 		return true;
 
 	return false;
@@ -319,8 +324,11 @@ again:
 	if (!pmd_present(_pmd))
 		return false;
 
-	if (pmd_trans_huge(_pmd))
+	if (pmd_trans_huge(_pmd)) {
+		if (pmd_protnone(_pmd) && (reason & VM_UFFD_RWP))
+			return true;
 		return !pmd_write(_pmd) && (reason & VM_UFFD_WP);
+	}
 
 	pte = pte_offset_map(pmd, address);
 	if (!pte)
@@ -344,6 +352,9 @@ again:
 	 * resolve the fault.
 	 */
 	if (!pte_write(ptent) && (reason & VM_UFFD_WP))
+		goto out;
+	/* PTE is still RW-protected, wait for userspace to resolve. */
+	if (pte_protnone(ptent) && (reason & VM_UFFD_RWP))
 		goto out;
 
 	ret = false;
@@ -1300,6 +1311,11 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 #endif
 		vm_flags |= VM_UFFD_MINOR;
 	}
+	if (uffdio_register.mode & UFFDIO_REGISTER_MODE_RWP) {
+		if (!(ctx->features & UFFD_FEATURE_RWP))
+			goto out;
+		vm_flags |= VM_UFFD_RWP;
+	}
 
 	ret = validate_range(mm, uffdio_register.range.start,
 			     uffdio_register.range.len);
@@ -1419,6 +1435,10 @@ out_unlock:
 		/* CONTINUE ioctl is only supported for MINOR ranges. */
 		if (!(uffdio_register.mode & UFFDIO_REGISTER_MODE_MINOR))
 			ioctls_out &= ~((__u64)1 << _UFFDIO_CONTINUE);
+
+		/* RWPROTECT is only supported for RWP ranges. */
+		if (!(uffdio_register.mode & UFFDIO_REGISTER_MODE_RWP))
+			ioctls_out &= ~((__u64)1 << _UFFDIO_RWPROTECT);
 
 		/*
 		 * Now that we scanned all vmas we can already tell
@@ -1767,6 +1787,55 @@ static int userfaultfd_writeprotect(struct userfaultfd_ctx *ctx,
 	return ret;
 }
 
+static int userfaultfd_rwprotect(struct userfaultfd_ctx *ctx,
+				 unsigned long arg)
+{
+	int ret;
+	struct uffdio_rwprotect uffdio_rwp;
+	struct userfaultfd_wake_range range;
+	bool mode_rwp, mode_dontwake;
+
+	if (atomic_read(&ctx->mmap_changing))
+		return -EAGAIN;
+
+	if (copy_from_user(&uffdio_rwp, (void __user *)arg,
+			   sizeof(uffdio_rwp)))
+		return -EFAULT;
+
+	ret = validate_range(ctx->mm, uffdio_rwp.range.start,
+			     uffdio_rwp.range.len);
+	if (ret)
+		return ret;
+
+	if (uffdio_rwp.mode & ~(UFFDIO_RWPROTECT_MODE_DONTWAKE |
+				UFFDIO_RWPROTECT_MODE_RWP))
+		return -EINVAL;
+
+	mode_rwp = uffdio_rwp.mode & UFFDIO_RWPROTECT_MODE_RWP;
+	mode_dontwake = uffdio_rwp.mode & UFFDIO_RWPROTECT_MODE_DONTWAKE;
+
+	if (mode_rwp && mode_dontwake)
+		return -EINVAL;
+
+	if (mmget_not_zero(ctx->mm)) {
+		ret = mrwprotect_range(ctx, uffdio_rwp.range.start,
+				       uffdio_rwp.range.len, mode_rwp);
+		mmput(ctx->mm);
+	} else {
+		return -ESRCH;
+	}
+
+	if (ret)
+		return ret;
+
+	if (!mode_rwp && !mode_dontwake) {
+		range.start = uffdio_rwp.range.start;
+		range.len = uffdio_rwp.range.len;
+		wake_userfault(ctx, &range);
+	}
+	return ret;
+}
+
 static int userfaultfd_continue(struct userfaultfd_ctx *ctx, unsigned long arg)
 {
 	__s64 ret;
@@ -2007,6 +2076,9 @@ static int userfaultfd_api(struct userfaultfd_ctx *ctx,
 		uffdio_api.features &= ~UFFD_FEATURE_WP_UNPOPULATED;
 		uffdio_api.features &= ~UFFD_FEATURE_WP_ASYNC;
 	}
+	if (!IS_ENABLED(CONFIG_ARCH_SUPPORTS_PROT_NONE))
+		uffdio_api.features &=
+			~UFFD_FEATURE_RWP;
 
 	ret = -EINVAL;
 	if (features & ~uffdio_api.features)
@@ -2072,6 +2144,9 @@ static long userfaultfd_ioctl(struct file *file, unsigned cmd,
 		break;
 	case UFFDIO_POISON:
 		ret = userfaultfd_poison(ctx, arg);
+		break;
+	case UFFDIO_RWPROTECT:
+		ret = userfaultfd_rwprotect(ctx, arg);
 		break;
 	}
 	return ret;

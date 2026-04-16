@@ -220,6 +220,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 	long pages = 0;
 	bool is_private_single_threaded;
 	bool prot_numa = cp_flags & MM_CP_PROT_NUMA;
+	bool uffd_rwp = cp_flags & MM_CP_UFFD_RWP;
 	bool uffd_wp = cp_flags & MM_CP_UFFD_WP;
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	int nr_ptes;
@@ -245,7 +246,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 			pte_t ptent;
 
 			/* Already in the desired state. */
-			if (prot_numa && pte_protnone(oldpte))
+			if ((prot_numa || uffd_rwp) &&
+			    pte_protnone(oldpte))
 				continue;
 
 			page = vm_normal_page(vma, addr, oldpte);
@@ -255,6 +257,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 			/*
 			 * Avoid trapping faults against the zero or KSM
 			 * pages. See similar comment in change_huge_pmd.
+			 * Skip this filter for uffd RWP which
+			 * must set protnone regardless of NUMA placement.
 			 */
 			if (prot_numa &&
 			    !folio_can_map_prot_numa(folio, vma,
@@ -649,6 +653,11 @@ long change_protection(struct mmu_gather *tlb,
 		newprot = PAGE_NONE;
 #else
 	WARN_ON_ONCE(cp_flags & MM_CP_PROT_NUMA);
+#endif
+
+#ifdef CONFIG_ARCH_SUPPORTS_PROT_NONE
+	if (cp_flags & MM_CP_UFFD_RWP)
+		newprot = PAGE_NONE;
 #endif
 
 	if (is_vm_hugetlb_page(vma))

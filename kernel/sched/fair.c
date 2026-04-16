@@ -25,6 +25,7 @@
 #include <linux/hugetlb_inline.h>
 #include <linux/jiffies.h>
 #include <linux/mm_api.h>
+#include <linux/userfaultfd_k.h>
 #include <linux/highmem.h>
 #include <linux/spinlock_api.h>
 #include <linux/cpumask_api.h>
@@ -3456,6 +3457,16 @@ retry_pids:
 		if (!vma_migratable(vma) || !vma_policy_mof(vma) ||
 			is_vm_hugetlb_page(vma) || (vma->vm_flags & VM_MIXEDMAP)) {
 			trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_UNSUITABLE);
+			continue;
+		}
+
+		/*
+		 * Skip VMAs registered for userfaultfd read-write protection.
+		 * Both NUMA balancing and uffd RWP use protnone PTEs as
+		 * access hints and would interfere with each other.
+		 */
+		if (userfaultfd_rwp(vma)) {
+			trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_UFFD_RWP);
 			continue;
 		}
 

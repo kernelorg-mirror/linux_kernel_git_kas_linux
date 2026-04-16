@@ -21,7 +21,8 @@
 #include <linux/hugetlb_inline.h>
 
 /* The set of all possible UFFD-related VM flags. */
-#define __VM_UFFD_FLAGS (VM_UFFD_MISSING | VM_UFFD_WP | VM_UFFD_MINOR)
+#define __VM_UFFD_FLAGS (VM_UFFD_MISSING | VM_UFFD_WP | VM_UFFD_MINOR | \
+			 VM_UFFD_RWP)
 
 /*
  * CAREFUL: Check include/uapi/asm-generic/fcntl.h when defining
@@ -130,6 +131,8 @@ extern int mwriteprotect_range(struct userfaultfd_ctx *ctx, unsigned long start,
 			       unsigned long len, bool enable_wp);
 extern long uffd_wp_range(struct vm_area_struct *vma,
 			  unsigned long start, unsigned long len, bool enable_wp);
+extern int mrwprotect_range(struct userfaultfd_ctx *ctx, unsigned long start,
+			    unsigned long len, bool enable_rwp);
 
 /* move_pages */
 void double_pt_lock(spinlock_t *ptl1, spinlock_t *ptl2);
@@ -161,7 +164,7 @@ static inline bool is_mergeable_vm_userfaultfd_ctx(struct vm_area_struct *vma,
  */
 static inline bool uffd_disable_huge_pmd_share(struct vm_area_struct *vma)
 {
-	return vma->vm_flags & (VM_UFFD_WP | VM_UFFD_MINOR);
+	return vma->vm_flags & (VM_UFFD_WP | VM_UFFD_MINOR | VM_UFFD_RWP);
 }
 
 /*
@@ -189,6 +192,11 @@ static inline bool userfaultfd_wp(struct vm_area_struct *vma)
 static inline bool userfaultfd_minor(struct vm_area_struct *vma)
 {
 	return vma->vm_flags & VM_UFFD_MINOR;
+}
+
+static inline bool userfaultfd_rwp(struct vm_area_struct *vma)
+{
+	return vma->vm_flags & VM_UFFD_RWP;
 }
 
 static inline bool userfaultfd_pte_wp(struct vm_area_struct *vma,
@@ -222,10 +230,14 @@ static inline bool vma_can_userfault(struct vm_area_struct *vma,
 		return false;
 
 	/*
-	 * If wp async enabled, and WP is the only mode enabled, allow any
-	 * memory type.
+	 * RWP uses protnone which works on all memory types.
+	 * WP async also allows any memory type.
+	 * If only such modes are requested, skip the type check.
 	 */
-	if (wp_async && (vm_flags == VM_UFFD_WP))
+	vm_flags &= ~VM_UFFD_RWP;
+	if (wp_async && (vm_flags & VM_UFFD_WP))
+		vm_flags &= ~VM_UFFD_WP;
+	if (!vm_flags)
 		return true;
 
 	/*

@@ -2181,6 +2181,24 @@ static inline bool can_change_pmd_writable(struct vm_area_struct *vma,
 	return pmd_dirty(pmd);
 }
 
+static void uffd_rwp_feed_numa_fault_pmd(struct vm_fault *vmf)
+{
+	struct folio *folio = pmd_folio(vmf->orig_pmd);
+	int nid = folio_nid(folio);
+	int flags = 0;
+
+	if (nid == numa_node_id())
+		flags |= TNF_FAULT_LOCAL;
+	task_numa_fault(folio_last_cpupid(folio), nid, HPAGE_PMD_NR, flags);
+}
+
+vm_fault_t do_huge_pmd_uffd_rwp(struct vm_fault *vmf)
+{
+	uffd_rwp_feed_numa_fault_pmd(vmf);
+
+	return handle_userfault(vmf, VM_UFFD_RWP);
+}
+
 /* NUMA hinting page fault entry point for trans huge pmds */
 vm_fault_t do_huge_pmd_numa_page(struct vm_fault *vmf)
 {
@@ -2563,6 +2581,7 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	pmd_t oldpmd, entry;
 	bool prot_numa = cp_flags & MM_CP_PROT_NUMA;
+	bool uffd_rwp = cp_flags & MM_CP_UFFD_RWP;
 	bool uffd_wp = cp_flags & MM_CP_UFFD_WP;
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	int ret = 1;
@@ -2582,17 +2601,17 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		goto unlock;
 	}
 
-	if (prot_numa) {
+	/* Already protnone — nothing to do for either NUMA or uffd */
+	if ((prot_numa || uffd_rwp) && pmd_protnone(*pmd))
+		goto unlock;
 
+	if (prot_numa) {
 		/*
 		 * Avoid trapping faults against the zero page. The read-only
 		 * data is likely to be read-cached on the local CPU and
 		 * local/remote hits to the zero page are not interesting.
 		 */
 		if (is_huge_zero_pmd(*pmd))
-			goto unlock;
-
-		if (pmd_protnone(*pmd))
 			goto unlock;
 
 		if (!folio_can_map_prot_numa(pmd_folio(*pmd), vma,
