@@ -1499,8 +1499,11 @@ static enum scan_result try_collapse_pte_mapped_thp(struct mm_struct *mm, unsign
 	if (!thp_vma_allowable_order(vma, vma->vm_flags, TVA_FORCED_COLLAPSE, PMD_ORDER))
 		return SCAN_VMA_CHECK;
 
-	/* Keep pmd pgtable for uffd-wp; see comment in retract_page_tables() */
-	if (userfaultfd_wp(vma))
+	/*
+	 * Keep pmd pgtable for uffd-wp/rwp; see comment in
+	 * retract_page_tables().
+	 */
+	if (userfaultfd_wp(vma) || userfaultfd_rwp(vma))
 		return SCAN_PTE_UFFD_WP;
 
 	folio = filemap_lock_folio(vma->vm_file->f_mapping,
@@ -1715,11 +1718,12 @@ static bool file_backed_vma_is_retractable(struct vm_area_struct *vma)
 	/*
 	 * When a vma is registered with uffd-wp, we cannot recycle
 	 * the page table because there may be pte markers installed.
-	 * Other vmas can still have the same file mapped hugely, but
-	 * skip this one: it will always be mapped in small page size
-	 * for uffd-wp registered ranges.
+	 * VM_UFFD_RWP ranges similarly rely on per-PTE uffd-wp state
+	 * and cannot be recycled to a shared PMD. Other vmas can still
+	 * have the same file mapped hugely, but skip this one: it will
+	 * always be mapped in small page size for these registrations.
 	 */
-	if (userfaultfd_wp(vma))
+	if (userfaultfd_wp(vma) || userfaultfd_rwp(vma))
 		return false;
 
 	/*

@@ -1959,7 +1959,7 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
 	if (pte_unused(pte))
 		return 1;
 
-	if (userfaultfd_wp(vma))
+	if (userfaultfd_wp(vma) || userfaultfd_rwp(vma))
 		return 1;
 
 	/*

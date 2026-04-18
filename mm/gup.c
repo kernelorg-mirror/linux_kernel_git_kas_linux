@@ -695,7 +695,8 @@ static inline bool can_follow_write_pmd(pmd_t pmd, struct page *page,
 	/* ... and a write-fault isn't required for other reasons. */
 	if (pmd_needs_soft_dirty_wp(vma, pmd))
 		return false;
-	return !userfaultfd_huge_pmd_wp(vma, pmd);
+	return !userfaultfd_huge_pmd_wp(vma, pmd) &&
+	       !userfaultfd_huge_pmd_rwp(vma, pmd);
 }
 
 static struct page *follow_huge_pmd(struct vm_area_struct *vma,
@@ -796,7 +797,8 @@ static inline bool can_follow_write_pte(pte_t pte, struct page *page,
 	/* ... and a write-fault isn't required for other reasons. */
 	if (pte_needs_soft_dirty_wp(vma, pte))
 		return false;
-	return !userfaultfd_pte_wp(vma, pte);
+	return !userfaultfd_pte_wp(vma, pte) &&
+	       !userfaultfd_pte_rwp(vma, pte);
 }
 
 static struct page *follow_page_pte(struct vm_area_struct *vma,

@@ -220,6 +220,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 	long pages = 0;
 	bool is_private_single_threaded;
 	bool prot_numa = cp_flags & MM_CP_PROT_NUMA;
+	bool uffd_rwp = cp_flags & MM_CP_UFFD_RWP;
+	bool uffd_rwp_resolve = cp_flags & MM_CP_UFFD_RWP_RESOLVE;
 	bool uffd_wp = cp_flags & MM_CP_UFFD_WP;
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	int nr_ptes;
@@ -247,6 +249,14 @@ static long change_pte_range(struct mmu_gather *tlb,
 			/* Already in the desired state. */
 			if (prot_numa && pte_protnone(oldpte))
 				continue;
+			/*
+			 * RWP-protected PTEs carry _PAGE_UFFD_WP as a marker on
+			 * top of PROT_NONE. Skip only entries already in that
+			 * exact state; plain PROT_NONE from mprotect() still needs
+			 * to be promoted so future faults can be distinguished.
+			 */
+			if (uffd_rwp && pte_protnone(oldpte) && pte_uffd_wp(oldpte))
+				continue;
 
 			page = vm_normal_page(vma, addr, oldpte);
 			if (page)
@@ -255,6 +265,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 			/*
 			 * Avoid trapping faults against the zero or KSM
 			 * pages. See similar comment in change_huge_pmd.
+			 * Skip this filter for uffd RWP which
+			 * must set protnone regardless of NUMA placement.
 			 */
 			if (prot_numa &&
 			    !folio_can_map_prot_numa(folio, vma,
@@ -271,10 +283,20 @@ static long change_pte_range(struct mmu_gather *tlb,
 			oldpte = modify_prot_start_ptes(vma, addr, pte, nr_ptes);
 			ptent = pte_modify(oldpte, newprot);
 
-			if (uffd_wp)
+			if (uffd_wp || uffd_rwp)
 				ptent = pte_mkuffd_wp(ptent);
-			else if (uffd_wp_resolve)
+			else if (uffd_wp_resolve || uffd_rwp_resolve)
 				ptent = pte_clear_uffd_wp(ptent);
+
+			/*
+			 * The uffd-wp bit on a VM_UFFD_RWP VMA carries PROT_NONE
+			 * semantics. If mprotect() or NUMA hinting changed the
+			 * base protection, restore PAGE_NONE so the PTE still
+			 * traps on any access. pte_modify() preserves
+			 * _PAGE_UFFD_WP.
+			 */
+			if (userfaultfd_rwp(vma) && pte_uffd_wp(ptent))
+				ptent = pte_modify(ptent, PAGE_NONE);
 
 			/*
 			 * In some writable, shared mappings, we might want
@@ -359,7 +381,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 				 * to unprotect it, drop it; the next page
 				 * fault will trigger without uffd trapping.
 				 */
-				if (uffd_wp_resolve) {
+				if (uffd_wp_resolve || uffd_rwp_resolve) {
 					pte_clear(vma->vm_mm, addr, pte);
 					pages++;
 				}
@@ -368,9 +390,9 @@ static long change_pte_range(struct mmu_gather *tlb,
 				newpte = oldpte;
 			}
 
-			if (uffd_wp)
+			if (uffd_wp || uffd_rwp)
 				newpte = pte_swp_mkuffd_wp(newpte);
-			else if (uffd_wp_resolve)
+			else if (uffd_wp_resolve || uffd_rwp_resolve)
 				newpte = pte_swp_clear_uffd_wp(newpte);
 
 			if (!pte_same(oldpte, newpte)) {
@@ -637,7 +659,16 @@ long change_protection(struct mmu_gather *tlb,
 	pgprot_t newprot = vma->vm_page_prot;
 	long pages;
 
-	BUG_ON((cp_flags & MM_CP_UFFD_WP_ALL) == MM_CP_UFFD_WP_ALL);
+	/*
+	 * MM_CP_UFFD_{WP,RWP} and _RESOLVE are mutually exclusive within one
+	 * change, and WP and RWP cannot mix. Miswired callers get a warn and
+	 * a no-op; userspace cannot reach this state.
+	 */
+	if (WARN_ON_ONCE((cp_flags & MM_CP_UFFD_WP_ALL) == MM_CP_UFFD_WP_ALL ||
+			 (cp_flags & MM_CP_UFFD_RWP_ALL) == MM_CP_UFFD_RWP_ALL ||
+			 ((cp_flags & MM_CP_UFFD_WP_ALL) &&
+			  (cp_flags & MM_CP_UFFD_RWP_ALL))))
+		return 0;
 
 #ifdef CONFIG_NUMA_BALANCING
 	/*
@@ -650,6 +681,10 @@ long change_protection(struct mmu_gather *tlb,
 #else
 	WARN_ON_ONCE(cp_flags & MM_CP_PROT_NUMA);
 #endif
+
+	if (IS_ENABLED(CONFIG_ARCH_SUPPORTS_PROT_NONE) &&
+	    (cp_flags & MM_CP_UFFD_RWP))
+		newprot = PAGE_NONE;
 
 	if (is_vm_hugetlb_page(vma))
 		pages = hugetlb_change_protection(vma, start, end, newprot,
