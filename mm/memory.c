@@ -4754,8 +4754,14 @@ static struct folio *alloc_swap_folio(struct vm_fault *vmf)
 		folio = vma_alloc_folio(gfp, order, vma, addr);
 		if (folio) {
 			if (!mem_cgroup_swapin_charge_folio(folio, vma->vm_mm,
-							    gfp, entry))
+							    gfp, entry)) {
+				if (order > 1 &&
+				    folio_memcg_alloc_deferred(folio)) {
+					folio_put(folio);
+					goto fallback;
+				}
 				return folio;
+			}
 			count_mthp_stat(order, MTHP_STAT_SWPIN_FALLBACK_CHARGE);
 			folio_put(folio);
 		}
@@ -5275,6 +5281,10 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 				count_mthp_stat(order, MTHP_STAT_ANON_FAULT_FALLBACK_CHARGE);
 				folio_put(folio);
 				goto next;
+			}
+			if (order > 1 && folio_memcg_alloc_deferred(folio)) {
+				folio_put(folio);
+				goto fallback;
 			}
 			folio_throttle_swaprate(folio, gfp);
 			/*
