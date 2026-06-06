@@ -84,23 +84,19 @@ static int sdei_nmi_handler(u32 event, struct pt_regs *regs, void *arg)
 
 	if (cpumask_test_and_clear_cpu(cpu, &sdei_nmi_stop_mask)) {
 		/*
-		 * Never returns, and deliberately never completes the SDEI
-		 * event: SDEI_EVENT_COMPLETE has firmware restore the
-		 * interrupted context, which would land the CPU back in
-		 * the wedged loop (or in do_idle, which BUGs at
-		 * cpuhp_report_idle_dead once it sees itself offline).
-		 * Returning a modified pt_regs doesn't help --
-		 * arch/arm64/kernel/sdei.c::do_sdei_event only honours a PC
-		 * override via its IRQ-state heuristic and otherwise hands
-		 * EL3 its own saved-context slot back.
-		 *
-		 * Trade-off: EL3 retains ~one saved-context slot per parked
-		 * CPU until the next hardware reset (~hundreds of bytes per
-		 * CPU). Recoverability is unchanged versus an IPI-stopped
-		 * CPU: neither comes back without a reset.
+		 * Saves crash state when this is a kdump crash stop, marks
+		 * the CPU offline (the requester's ack), masks this PE and
+		 * flags the CPU for parking. The park itself happens on the
+		 * SDEI exit path, *after* firmware completed this event:
+		 * returning to the interrupted (wedged) context is not an
+		 * option, so do_sdei_event() redirects the completion via
+		 * SDEI_EVENT_COMPLETE_AND_RESUME into a stub that powers the
+		 * CPU off. Completing the event first is what makes CPU_OFF
+		 * legal (it can't be issued mid-event), and powering off lets
+		 * an SMP capture kernel reclaim the CPU with CPU_ON.
 		 */
 		arm64_nmi_cpu_stop(regs);
-		/* unreachable */
+		return SDEI_EV_HANDLED;
 	}
 
 	/*

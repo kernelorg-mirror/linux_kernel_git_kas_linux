@@ -14,6 +14,7 @@
 #include <asm/exception.h>
 #include <asm/kprobes.h>
 #include <asm/mmu.h>
+#include <asm/nmi.h>
 #include <asm/ptrace.h>
 #include <asm/sections.h>
 #include <asm/stacktrace.h>
@@ -223,6 +224,15 @@ unsigned long __kprobes do_sdei_event(struct pt_regs *regs,
 	err = sdei_event_handler(regs, arg);
 	if (err)
 		return SDEI_EV_FAILED;
+
+	/*
+	 * A CPU stopped by the SDEI cross-CPU NMI service must not return
+	 * to the interrupted context, and parking it inside the handler
+	 * would pin this event's EL3 state until reset. Complete the event
+	 * and continue into the park loop instead.
+	 */
+	if (IS_ENABLED(CONFIG_ARM_SDEI_NMI) && arm64_nmi_cpu_stop_pending())
+		return (unsigned long)__sdei_nmi_cpu_park;
 
 	if (elr != read_sysreg(elr_el1)) {
 		/*

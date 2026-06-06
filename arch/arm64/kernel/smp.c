@@ -912,16 +912,23 @@ static void __noreturn ipi_cpu_crash_stop(unsigned int cpu, struct pt_regs *regs
 }
 
 #ifdef CONFIG_ARM_SDEI_NMI
+static DEFINE_PER_CPU(bool, sdei_nmi_park_pending);
+
 /*
  * Stop entry for the SDEI cross-CPU NMI service: its event-0 handler
  * lands here when this CPU was asked to stop. The bookkeeping mirrors
- * the IPI_CPU_STOP{,_NMI} handling; the park happens inside the SDEI
- * event, which is never completed -- completing it would have firmware
- * resume the interrupted (typically wedged) context. No PSCI CPU_OFF
- * either: powering off a PE that EL3 still considers mid-event invites
- * firmware trouble.
+ * the IPI_CPU_STOP{,_NMI} handling. For the common kernel-mode case it
+ * does not park the CPU directly: we are still inside the SDEI event,
+ * whose only clean exit is through firmware, so it flags the park and
+ * returns. do_sdei_event() picks the flag up via
+ * arm64_nmi_cpu_stop_pending() and has the SDEI exit path complete the
+ * event with COMPLETE_AND_RESUME into __sdei_nmi_cpu_park, which powers
+ * the CPU off (sdei_nmi_parked_cpu_die()). The event must be completed
+ * first: PSCI CPU_OFF can't be issued from inside an in-flight SDEI
+ * event, and an off CPU is what lets an SMP capture kernel reclaim it.
+ * (The EL0-interrupted case parks in-handler; see below.)
  */
-void __noreturn arm64_nmi_cpu_stop(struct pt_regs *regs)
+void arm64_nmi_cpu_stop(struct pt_regs *regs)
 {
 	unsigned int cpu = smp_processor_id();
 
@@ -933,11 +940,57 @@ void __noreturn arm64_nmi_cpu_stop(struct pt_regs *regs)
 	/* the ack the stop requester polls for */
 	set_cpu_online(cpu, false);
 
+	/*
+	 * Mask this PE: once the in-progress event is completed, firmware
+	 * could otherwise dispatch the next queued event 0 straight into
+	 * the parked CPU and run a dying kernel's handler.
+	 */
 	sdei_mask_local_cpu();
+
+	/*
+	 * We normally complete the event and resume into __sdei_nmi_cpu_park
+	 * (see below). That park loop is plain kernel text, which is not
+	 * mapped on the KPTI return path to EL0 -- so if this event
+	 * interrupted userspace, resuming there would fault.
+	 *
+	 * A CPU in userspace is reached by the stop IPI, not by us, so this
+	 * is only a rare race. Just park in place for that case (the event
+	 * stays uncompleted, like an IPI-stopped CPU).
+	 */
+	if (user_mode(regs))
+		cpu_park_loop();
+
+	this_cpu_write(sdei_nmi_park_pending, true);
+}
+NOKPROBE_SYMBOL(arm64_nmi_cpu_stop);
+
+/* Consumed by do_sdei_event() on the SDEI exit path. */
+bool arm64_nmi_cpu_stop_pending(void)
+{
+	if (!this_cpu_read(sdei_nmi_park_pending))
+		return false;
+
+	this_cpu_write(sdei_nmi_park_pending, false);
+	return true;
+}
+NOKPROBE_SYMBOL(arm64_nmi_cpu_stop_pending);
+
+/*
+ * Tail of an SDEI NMI stop: entered from __sdei_nmi_cpu_park (entry.S) on
+ * this CPU's SDEI stack, after firmware completed the event. EL3 now holds
+ * no state for this PE, so PSCI CPU_OFF is usable -- power the CPU off like
+ * ipi_cpu_crash_stop() does, so an SMP capture (or any later) kernel can
+ * bring it back with CPU_ON. Falls back to parking if CPU_OFF is
+ * unavailable or returns.
+ */
+void __noreturn sdei_nmi_parked_cpu_die(void)
+{
+	if (IS_ENABLED(CONFIG_HOTPLUG_CPU))
+		__cpu_try_die(raw_smp_processor_id());
 
 	cpu_park_loop();
 }
-NOKPROBE_SYMBOL(arm64_nmi_cpu_stop);
+NOKPROBE_SYMBOL(sdei_nmi_parked_cpu_die);
 #endif
 
 static void arm64_send_ipi(const cpumask_t *mask, unsigned int nr)
