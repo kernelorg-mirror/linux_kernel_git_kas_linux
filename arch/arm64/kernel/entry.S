@@ -1098,27 +1098,15 @@ NOKPROBE(__sdei_handler_abort)
 
 #ifdef CONFIG_ARM_SDEI_NMI
 /*
- * COMPLETE_AND_RESUME landing pad for a CPU stopped by the SDEI
- * cross-CPU NMI service (see arm64_nmi_cpu_stop()). The event has been
- * completed, so EL3 holds no state for this PE and we are back in plain
- * NS-EL1 -- but on the interrupted (typically wedged) SP, which must not
- * be trusted. Switch to this CPU's SDEI normal-event stack -- free now
- * the event completed, and kept free because the PE was masked first --
- * and finish in C.
+ * DIAGNOSTIC variant: complete the event (COMPLETE_AND_RESUME) but only
+ * park in a stack-free wfe loop -- do NOT power the CPU off. Bisects the
+ * Grace capture-kernel failure: if this boots the capture kernel, the
+ * fault is in the CPU_OFF (sdei_nmi_parked_cpu_die); if it still dies,
+ * COMPLETE_AND_RESUME itself is at fault.
  */
 SYM_CODE_START(__sdei_nmi_cpu_park)
-	ldr_this_cpu dst=x5, sym=sdei_stack_normal_ptr, tmp=x6
-	mov	x6, #SDEI_STACK_SIZE
-	add	x5, x5, x6
-	mov	sp, x5
-
-#ifdef CONFIG_SHADOW_CALL_STACK
-	ldr_this_cpu dst=scs_sp, sym=sdei_shadow_call_stack_normal_ptr, tmp=x6
-#endif
-
-	bl	sdei_nmi_parked_cpu_die
-	/* does not return */
-	b	.
+1:	wfe
+	b	1b
 SYM_CODE_END(__sdei_nmi_cpu_park)
 NOKPROBE(__sdei_nmi_cpu_park)
 #endif /* CONFIG_ARM_SDEI_NMI */
