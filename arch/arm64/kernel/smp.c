@@ -985,6 +985,18 @@ NOKPROBE_SYMBOL(arm64_nmi_cpu_stop_pending);
  */
 void __noreturn sdei_nmi_parked_cpu_die(void)
 {
+	/*
+	 * DIAG: bring this CPU's GIC interface to a known state before
+	 * CPU_OFF, in case the EL3-routed SDEI dispatch left a running
+	 * priority / group-enable that confuses the firmware's power-off
+	 * (ipi_cpu_crash_stop() reaches CPU_OFF from a normal IRQ context;
+	 * we reach it after an SDEI event completion).
+	 */
+	gic_write_pmr(GIC_PRIO_IRQON);
+	write_sysreg_s(0, SYS_ICC_IGRPEN0_EL1);
+	write_sysreg_s(0, SYS_ICC_IGRPEN1_EL1);
+	isb();
+
 	if (IS_ENABLED(CONFIG_HOTPLUG_CPU))
 		__cpu_try_die(raw_smp_processor_id());
 
