@@ -983,11 +983,26 @@ NOKPROBE_SYMBOL(arm64_nmi_cpu_stop_pending);
  * bring it back with CPU_ON. Falls back to parking if CPU_OFF is
  * unavailable or returns.
  */
+/* DIAG: noinline + real stack writes, to fault if the stub's sp/scs is bad. */
+static noinline void sdei_nmi_park_probe(void)
+{
+	volatile unsigned long buf[16];
+	int i;
+
+	for (i = 0; i < 16; i++)
+		buf[i] = i;
+}
+
 void __noreturn sdei_nmi_parked_cpu_die(void)
 {
-	if (IS_ENABLED(CONFIG_HOTPLUG_CPU))
-		__cpu_try_die(raw_smp_processor_id());
-
+	/*
+	 * DIAG: exercise the stack-switch + bl/ret + SCS the way __cpu_try_die
+	 * would, but WITHOUT psci_cpu_off. If __sdei_nmi_cpu_park set sp/scs
+	 * up wrong, this faults (and the CPU runs wild) -- same silent symptom
+	 * as cpu-off-wip. If it parks cleanly, the C-call setup is fine and
+	 * CPU_OFF itself is the culprit.
+	 */
+	sdei_nmi_park_probe();
 	cpu_park_loop();
 }
 NOKPROBE_SYMBOL(sdei_nmi_parked_cpu_die);
