@@ -985,6 +985,16 @@ NOKPROBE_SYMBOL(arm64_nmi_cpu_stop_pending);
  */
 void __noreturn sdei_nmi_parked_cpu_die(void)
 {
+	/*
+	 * DIAG: make the CPU_OFF context match ipi_cpu_crash_stop()'s as
+	 * closely as we can from the kernel -- mask DAIF and reset the GIC
+	 * priority mask -- in case the SDEI dispatch left interrupt/priority
+	 * state that the firmware power-off chokes on.
+	 */
+	local_daif_mask();
+	gic_write_pmr(GIC_PRIO_IRQON);
+	isb();
+
 	if (IS_ENABLED(CONFIG_HOTPLUG_CPU))
 		__cpu_try_die(raw_smp_processor_id());
 
