@@ -912,8 +912,14 @@ void __noreturn arm64_nmi_cpu_stop(struct pt_regs *regs, bool die_on_crash)
 
 	sdei_mask_local_cpu();
 
-	if (crash && die_on_crash)
-		__cpu_try_die(cpu);
+	/*
+	 * DIAG (do not submit): attempt PSCI CPU_OFF unconditionally, even on
+	 * the SDEI handler path (die_on_crash == false), to test whether
+	 * CPU_OFF works when called directly from inside an SDEI event that
+	 * has NOT been completed. The wedged CPU stopped via the SDEI rung is
+	 * the case of interest; if CPU_OFF wedges EL3 it hangs here.
+	 */
+	__cpu_try_die(cpu);
 
 	/* just in case */
 	cpu_park_loop();
