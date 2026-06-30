@@ -3,6 +3,7 @@
 
 #define dev_fmt(fmt) "tegra241_cmdqv: " fmt
 
+#include <linux/crash_dump.h>
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
@@ -913,8 +914,17 @@ __tegra241_cmdqv_probe(struct arm_smmu_device *smmu, struct resource *res,
 	}
 
 	regval = readl(base + TEGRA241_CMDQV_CONFIG);
-	if (disable_cmdqv) {
-		dev_info(smmu->dev, "Detected disable_cmdqv=true\n");
+	/*
+	 * CMDQV only accelerates command (invalidation) submission; it adds no
+	 * translation capability. A kdump capture kernel does little I/O and is
+	 * better served by a small footprint and the minimal, well-tested
+	 * baseline SMMUv3 command queue (sized down to a single page elsewhere),
+	 * so skip CMDQV entirely there, just as disable_cmdqv does.
+	 */
+	if (disable_cmdqv || is_kdump_kernel()) {
+		dev_info(smmu->dev, "%s, disabling CMDQV\n",
+			 disable_cmdqv ? "Detected disable_cmdqv=true"
+				       : "kdump capture kernel");
 		writel(regval & ~CMDQV_EN, base + TEGRA241_CMDQV_CONFIG);
 		goto iounmap;
 	}
