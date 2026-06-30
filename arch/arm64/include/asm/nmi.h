@@ -45,4 +45,7 @@ static inline void sdei_nmi_stop_cpus(const cpumask_t *mask) { }
  */
 void __noreturn arm64_nmi_cpu_stop(struct pt_regs *regs, bool die_on_crash);
 
+/* DIAG (do not submit): complete the SDEI event, then PSCI CPU_OFF. */
+void __noreturn arm64_sdei_cpu_complete_off(struct pt_regs *regs);
+
 #endif /* __ASM_NMI_H */

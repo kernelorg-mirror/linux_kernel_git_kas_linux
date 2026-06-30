@@ -36,6 +36,13 @@ asmlinkage void __sdei_asm_entry_trampoline(unsigned long event_num,
 void __sdei_handler_abort(void);
 
 /*
+ * DIAG (do not submit): complete the running handler (COMPLETE_AND_RESUME, so
+ * EL3 tears the dispatch down) and then PSCI CPU_OFF from the resume point.
+ * Never returns. Used to test re-onlining an SDEI-stopped CPU on real HW.
+ */
+void __noreturn __sdei_handler_complete_cpu_off(void);
+
+/*
  * The above entry point does the minimum to call C code. This function does
  * anything else, before calling the driver.
  */

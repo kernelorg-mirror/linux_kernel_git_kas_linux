@@ -8,6 +8,7 @@
 
 #include <linux/acpi.h>
 #include <linux/arm_sdei.h>
+#include <asm/sdei.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
@@ -919,6 +920,37 @@ void __noreturn arm64_nmi_cpu_stop(struct pt_regs *regs, bool die_on_crash)
 	cpu_park_loop();
 }
 NOKPROBE_SYMBOL(arm64_nmi_cpu_stop);
+
+#ifdef CONFIG_ARM_SDEI_NMI
+/*
+ * DIAG (do not submit): SDEI stop path that completes the event *before*
+ * powering the CPU off. Like arm64_nmi_cpu_stop()'s crash path, but instead of
+ * __cpu_try_die() on the still-active event -- which leaves EL3 with a dangling
+ * dispatch that TF-A does not tear down on CPU_OFF, wedging an SMP capture
+ * kernel's attempt to re-online the PE -- COMPLETE_AND_RESUME the event and
+ * PSCI CPU_OFF from the resume trampoline. Tests whether completing first lets
+ * the capture kernel re-online the SDEI-stopped CPU. Must run in SDEI handler
+ * context (an active dispatch to complete).
+ */
+void __noreturn arm64_sdei_cpu_complete_off(struct pt_regs *regs)
+{
+	unsigned int cpu = smp_processor_id();
+	bool crash = IS_ENABLED(CONFIG_KEXEC_CORE) && crash_stop;
+
+	local_daif_mask();
+
+#ifdef CONFIG_KEXEC_CORE
+	if (crash && regs)
+		crash_save_cpu(regs, cpu);
+#endif
+
+	set_cpu_online(cpu, false);
+
+	/* completes the event (clean EL3 teardown), then PSCI CPU_OFF */
+	__sdei_handler_complete_cpu_off();
+}
+NOKPROBE_SYMBOL(arm64_sdei_cpu_complete_off);
+#endif
 
 /*
  * We need to implement panic_smp_self_stop() for parallel panic() calls, so

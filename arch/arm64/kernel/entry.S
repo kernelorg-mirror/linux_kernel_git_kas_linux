@@ -1095,4 +1095,21 @@ SYM_CODE_START(__sdei_handler_abort)
 1:	ret
 SYM_CODE_END(__sdei_handler_abort)
 NOKPROBE(__sdei_handler_abort)
+
+// DIAG (do not submit): complete the running SDEI handler via
+// COMPLETE_AND_RESUME (so EL3 tears the dispatch down), resuming at 1f, then
+// PSCI CPU_OFF. Unlike __sdei_handler_abort's "1: ret" -- which resumes the
+// interrupted context -- 1f here powers the PE off, so the event is completed
+// *and* the CPU is stopped. Resume runs at EL1 on the interrupted context's
+// SP; CPU_OFF takes no args and needs no stack. PSCI CPU_OFF FID = 0x84000002.
+SYM_CODE_START(__sdei_handler_complete_cpu_off)
+	mov_q	x0, SDEI_1_0_FN_SDEI_EVENT_COMPLETE_AND_RESUME
+	adr	x1, 1f
+	ldr_l	x2, sdei_exit_mode
+	sdei_handler_exit exit_mode=x2
+1:	mov_q	x0, 0x84000002		// PSCI_0_2_FN_CPU_OFF
+	smc	#0
+	b	.			// CPU_OFF should not return
+SYM_CODE_END(__sdei_handler_complete_cpu_off)
+NOKPROBE(__sdei_handler_complete_cpu_off)
 #endif /* CONFIG_ARM_SDE_INTERFACE */
