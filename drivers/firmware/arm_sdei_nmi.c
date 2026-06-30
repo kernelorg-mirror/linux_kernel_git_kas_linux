@@ -96,22 +96,19 @@ static int sdei_nmi_handler(u32 event, struct pt_regs *regs, void *arg)
 	 */
 	if (READ_ONCE(sdei_nmi_stopping)) {
 		/*
-		 * Never returns, and deliberately never completes the SDEI
-		 * event: SDEI_EVENT_COMPLETE has firmware restore the
-		 * interrupted context, which would land the CPU back in
-		 * the wedged loop (or in do_idle, which BUGs at
-		 * cpuhp_report_idle_dead once it sees itself offline).
-		 * Returning a modified pt_regs doesn't help --
-		 * arch/arm64/kernel/sdei.c::do_sdei_event only honours a PC
-		 * override via its IRQ-state heuristic and otherwise hands
-		 * EL3 its own saved-context slot back.
+		 * Deliberately never completes the SDEI event:
+		 * SDEI_EVENT_COMPLETE has firmware restore the interrupted
+		 * context, which would land the CPU back in the wedged loop
+		 * (or in do_idle, which BUGs at cpuhp_report_idle_dead once
+		 * it sees itself offline).
 		 *
-		 * Trade-off: EL3 retains ~one saved-context slot per parked
-		 * CPU until the next hardware reset (~hundreds of bytes per
-		 * CPU). Recoverability is unchanged versus an IPI-stopped
-		 * CPU: neither comes back without a reset.
+		 * die_on_crash = true: on the kdump crash path, save the
+		 * wedged context into the vmcore and then PSCI CPU_OFF, so an
+		 * SMP capture kernel can re-online the CPU as it does an
+		 * IPI-crash-stopped one. Falls back to parking if CPU_OFF is
+		 * unavailable; the event is left uncompleted either way.
 		 */
-		arm64_nmi_cpu_stop(regs, false);
+		arm64_nmi_cpu_stop(regs, true);
 		/* unreachable */
 	}
 
