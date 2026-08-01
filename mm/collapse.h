@@ -135,6 +135,17 @@ struct collapse_control {
 	unsigned long batch_end;
 };
 
+static inline int collapse_test_exit(struct mm_struct *mm)
+{
+	return atomic_read(&mm->mm_users) == 0;
+}
+
+static inline int collapse_test_exit_or_disable(struct mm_struct *mm)
+{
+	return collapse_test_exit(mm) ||
+		mm_flags_test(MMF_DISABLE_THP_COMPLETELY, mm);
+}
+
 /* Which orders a VMA may collapse to, zero when it may not collapse at all */
 unsigned long collapse_possible_orders(struct vm_area_struct *vma,
 		vm_flags_t vm_flags, enum tva_type tva_flags);
