@@ -116,8 +116,6 @@ struct collapse_control {
 	 * file collapse works on the page cache and never sees one; the run is
 	 * what gives it back.
 	 */
-	unsigned long scan_orders;
-	int scan_referenced;
 	struct file *scan_file;
 	pgoff_t scan_pgoff;
 
@@ -181,6 +179,12 @@ static inline int collapse_test_exit_or_disable(struct mm_struct *mm)
 	return collapse_test_exit(mm) ||
 		mm_flags_test(MMF_DISABLE_THP_COMPLETELY, mm);
 }
+
+enum scan_result collapse_scan_anon_pmd(struct vm_area_struct *vma,
+		unsigned long start, unsigned long end,
+		struct collapse_control *cc);
+enum scan_result collapse_anon_pmd(struct mm_struct *mm, unsigned long start,
+		unsigned long end, struct collapse_control *cc);
 
 /* Which orders a VMA may collapse to, zero when it may not collapse at all */
 unsigned long collapse_possible_orders(struct vm_area_struct *vma,
