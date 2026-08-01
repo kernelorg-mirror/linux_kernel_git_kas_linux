@@ -960,6 +960,7 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 	unsigned long hstart, hend, addr, orders;
 	enum scan_result last_fail = SCAN_FAIL;
 	int thps = 0;
+	int err;
 
 	BUG_ON(vma->vm_start > range->start);
 	BUG_ON(vma->vm_end < range->end);
@@ -978,8 +979,13 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 	cc = kmalloc_obj(*cc);
 	if (!cc)
 		return -ENOMEM;
-	collapse_control_init(cc);
 	collapse_policy_forced(&cc->policy);
+	cc->progress = 0;
+	err = collapse_control_init(cc);
+	if (err) {
+		kfree(cc);
+		return err;
+	}
 
 	lru_add_drain_all();
 

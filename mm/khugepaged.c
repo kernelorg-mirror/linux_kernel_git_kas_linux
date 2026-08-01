@@ -2720,12 +2720,6 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
 	return result;
 }
 
-void collapse_control_init(struct collapse_control *cc)
-{
-	cc->progress = 0;
-	cc->scan_file = NULL;
-}
-
 /* A scan that took a file reference should have been run */
 static void collapse_put_scan_file(struct collapse_control *cc)
 {
@@ -2733,11 +2727,6 @@ static void collapse_put_scan_file(struct collapse_control *cc)
 		fput(cc->scan_file);
 		cc->scan_file = NULL;
 	}
-}
-
-void collapse_control_release(struct collapse_control *cc)
-{
-	collapse_put_scan_file(cc);
 }
 
 enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
@@ -2974,7 +2963,7 @@ static void khugepaged_do_scan(struct collapse_control *cc)
 
 	lru_add_drain_all();
 
-	collapse_control_init(cc);
+	cc->progress = 0;
 	/* One policy for the whole pass, so every table is judged the same */
 	collapse_policy_khugepaged(&cc->policy);
 
@@ -3008,8 +2997,6 @@ static void khugepaged_do_scan(struct collapse_control *cc)
 			khugepaged_alloc_sleep();
 		}
 	}
-
-	collapse_control_release(cc);
 }
 
 static bool khugepaged_should_wakeup(void)
@@ -3115,12 +3102,22 @@ int start_stop_khugepaged(void)
 	guard(mutex)(&khugepaged_mutex);
 	if (hugepage_enabled()) {
 		if (!khugepaged_thread) {
-			struct task_struct *new_thread = kthread_run(khugepaged,
-								     NULL,
-								     "khugepaged");
+			struct task_struct *new_thread;
+			int err;
 
+			/*
+			 * The engine collapses out of its candidate array, so
+			 * take it before starting the thread that needs it: a
+			 * failure surfaces here rather than in the daemon.
+			 */
+			err = collapse_control_init(&khugepaged_collapse_control);
+			if (err)
+				return err;
+
+			new_thread = kthread_run(khugepaged, NULL, "khugepaged");
 			if (IS_ERR(new_thread)) {
 				pr_err("khugepaged: kthread_run(khugepaged) failed\n");
+				collapse_control_release(&khugepaged_collapse_control);
 				return PTR_ERR(new_thread);
 			}
 
@@ -3132,6 +3129,7 @@ int start_stop_khugepaged(void)
 	} else if (khugepaged_thread) {
 		kthread_stop(khugepaged_thread);
 		khugepaged_thread = NULL;
+		collapse_control_release(&khugepaged_collapse_control);
 	}
 	set_recommended_min_free_kbytes();
 	return 0;
