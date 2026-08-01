@@ -1059,7 +1059,7 @@ static inline enum scan_result check_pmd_state(pmd_t *pmd)
 	return SCAN_SUCCEED;
 }
 
-static enum scan_result find_pmd_or_thp_or_none(struct mm_struct *mm,
+enum scan_result find_pmd_or_thp_or_none(struct mm_struct *mm,
 		unsigned long address, pmd_t **pmd)
 {
 	*pmd = mm_find_pmd(mm, address);
