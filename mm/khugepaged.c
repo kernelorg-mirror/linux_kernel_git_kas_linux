@@ -1420,7 +1420,7 @@ unsigned int max_order_from_offset(unsigned int offset)
  * If a collapse is permitted, we attempt to collapse the PTE range into a
  * mTHP.
  */
-static enum scan_result mthp_collapse(struct mm_struct *mm,
+static enum scan_result __maybe_unused mthp_collapse(struct mm_struct *mm,
 		unsigned long address, int referenced, int unmapped,
 		struct collapse_control *cc, unsigned long enabled_orders)
 {
@@ -1522,7 +1522,8 @@ done:
 	return last_result;
 }
 
-static enum scan_result collapse_scan_anon_pmd(struct vm_area_struct *vma,
+static enum scan_result __maybe_unused
+collapse_scan_pmd_legacy(struct vm_area_struct *vma,
 		unsigned long start_addr, struct collapse_control *cc,
 		unsigned long enabled_orders)
 {
@@ -1705,11 +1706,6 @@ static enum scan_result collapse_scan_anon_pmd(struct vm_area_struct *vma,
 	}
 out_unmap:
 	pte_unmap_unlock(pte, ptl);
-	if (result == SCAN_SUCCEED) {
-		cc->scan_orders = enabled_orders;
-		cc->scan_referenced = referenced;
-		cc->scan_unmapped = unmapped;
-	}
 out:
 	trace_mm_khugepaged_scan_pmd(mm, failed_pfn, referenced,
 				     none_or_zero, result, unmapped);
@@ -2735,8 +2731,17 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
 	/* Whatever the last scan found has to have been run by now */
 	collapse_put_scan_file(cc);
 
-	if (vma_is_anonymous(vma))
-		return collapse_scan_anon_pmd(vma, addr, cc, orders);
+	if (vma_is_anonymous(vma)) {
+		enum scan_result result;
+
+		result = collapse_scan_anon_pmd(vma, addr,
+						addr + HPAGE_PMD_SIZE, cc);
+		/*
+		 * The engine reports what it turned down even when it selected
+		 * something, so what it selected is what says there is work.
+		 */
+		return cc->select_orders ? SCAN_SUCCEED : result;
+	}
 
 	pgoff = linear_page_index(vma, addr);
 	result = collapse_scan_file(vma->vm_mm, addr, vma->vm_file, pgoff, cc);
@@ -2764,8 +2769,7 @@ enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
 	pgoff_t pgoff;
 
 	if (!file)
-		return mthp_collapse(mm, addr, cc->scan_referenced,
-				     cc->scan_unmapped, cc, cc->scan_orders);
+		return collapse_anon_pmd(mm, addr, addr + HPAGE_PMD_SIZE, cc);
 
 	cc->scan_file = NULL;
 	pgoff = cc->scan_pgoff;
