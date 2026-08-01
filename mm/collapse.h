@@ -102,6 +102,21 @@ struct collapse_control {
 	int scan_unmapped;
 	struct file *scan_file;
 	pgoff_t scan_pgoff;
+
+	/* Orders still worth attempting in the table being scanned */
+	unsigned long select_orders;
+
+	/* PTEs collapsed in it so far */
+	unsigned int nr_collapsed;
+
+	/*
+	 * Why the scan would not take all of the table, or SCAN_SUCCEED if it
+	 * took every order it was offered.  Not the opposite of what the scan
+	 * selected: a table can be worth collapsing at one order and refused at
+	 * another, so a scan that found work still has a reason to report, and
+	 * the collapse reports it when it salvages nothing.
+	 */
+	enum scan_result scan_refusal;
 };
 
 /* Which orders a VMA may collapse to, zero when it may not collapse at all */
@@ -150,5 +165,12 @@ enum scan_result collapse_vma_revalidate(struct mm_struct *mm,
 		unsigned long address, bool expect_anon,
 		struct vm_area_struct **vmap, struct collapse_control *cc,
 		unsigned int order);
+
+/*
+ * Defined in khugepaged.c, which still uses it itself.
+ * TODO: move it into collapse.c once its last khugepaged.c user is gone.
+ */
+enum scan_result find_pmd_or_thp_or_none(struct mm_struct *mm,
+		unsigned long address, pmd_t **pmd);
 
 #endif	/* __MM_COLLAPSE_H */
