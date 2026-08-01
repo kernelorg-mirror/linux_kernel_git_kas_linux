@@ -10,6 +10,8 @@
 #define COLLAPSE_MAX_PTES_LIMIT		(HPAGE_PMD_NR - 1)
 #define COLLAPSE_MIN_MTHP_ORDER		2
 
+struct collapse_candidate;
+
 enum scan_result {
 	SCAN_FAIL,
 	SCAN_SUCCEED,
@@ -117,6 +119,10 @@ struct collapse_control {
 	 * the collapse reports it when it salvages nothing.
 	 */
 	enum scan_result scan_refusal;
+
+	/* The candidate windows collected for the current round */
+	struct collapse_candidate *candidates;
+	unsigned int nr_candidates;
 };
 
 /* Which orders a VMA may collapse to, zero when it may not collapse at all */
@@ -154,7 +160,7 @@ unsigned long collapse_possible_orders(struct vm_area_struct *vma,
  * the file while it still has the VMA to take it from, and the run is what
  * gives it back.
  */
-void collapse_control_init(struct collapse_control *cc);
+int collapse_control_init(struct collapse_control *cc);
 void collapse_control_release(struct collapse_control *cc);
 enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
 		unsigned long addr, struct collapse_control *cc,
