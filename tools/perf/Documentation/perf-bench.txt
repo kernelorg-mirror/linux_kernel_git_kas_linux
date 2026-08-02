@@ -335,8 +335,12 @@ can be held and used lightly while something else works on it.
 
 -i::
 --interval::
-Report the operation rate and how much of the address space huge pages
-cover every so many milliseconds (default: 0, or only at the end).
+Report progress every so many milliseconds (default: 0, or only at the
+end): the operation rate, how much of the address space huge pages cover,
+and the p50, p99 and p99.9 latency of each operation in the mix *for that
+interval alone*.  A run usually outlives whatever it disturbs, so a single
+distribution over the whole run mixes the disturbed and the settled state
+together; per-interval figures keep them apart.
 
 --sequential::
 Walk each region in order rather than picking pages at random.

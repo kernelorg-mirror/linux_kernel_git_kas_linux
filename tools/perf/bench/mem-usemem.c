@@ -687,6 +687,37 @@ static unsigned long anon_huge_kb(void)
 	return kb;
 }
 
+/*
+ * A histogram of what happened since the last snapshot.  The workers' buckets
+ * only ever grow, so subtracting the previous total is exact and needs no
+ * coordination with them -- a torn read is not possible for a u64 on any
+ * configuration this builds for, and a count that lands a moment late simply
+ * lands in the next interval.
+ */
+static void hist_delta(struct hist *to, const struct hist *now,
+		       struct hist *prev)
+{
+	unsigned int i;
+
+	to->nr = now->nr - prev->nr;
+	to->sum = now->sum - prev->sum;
+	to->max = now->max;		/* running, not per interval */
+	for (i = 0; i < HIST_BUCKETS; i++)
+		to->bucket[i] = now->bucket[i] - prev->bucket[i];
+	*prev = *now;
+}
+
+/* Merge every thread's histogram for @op into @to */
+static void hist_total(struct hist *to, struct usemem_thread *threads,
+		       enum usemem_op_id op)
+{
+	unsigned int i;
+
+	memset(to, 0, sizeof(*to));
+	for (i = 0; i < nr_threads; i++)
+		hist_merge(to, &threads[i].hist[op]);
+}
+
 /* Counted without holding anything: a progress line may lag a thread or two */
 static u64 ops_so_far(struct usemem_thread *threads)
 {
@@ -719,13 +750,34 @@ static void sleep_until(u64 when)
 		sleep_ns(when - now);
 }
 
+/*
+ * Latency belongs to the interval it happened in.  A run outlives whatever it
+ * disturbs -- a collapse finishes, a scan moves on -- and one histogram over
+ * the whole run averages the disturbed state together with the settled one,
+ * which flatters or penalises a kernel according to how quickly it settles
+ * rather than to what it cost.  Reporting per interval keeps the two apart.
+ */
 static void run_intervals(struct usemem_thread *threads, u64 start_ns)
 {
 	u64 deadline = start_ns + (u64)nr_secs * NSEC_PER_SEC;
 	u64 tick = (u64)interval_ms * NSEC_PER_MSEC;
+	struct hist prev[NR_OPS] = { 0 };
 	u64 last_ops = 0, next = start_ns;
+	unsigned int op;
 
-	printf("#\n# %10s %12s %14s\n", "secs", "ops/sec", "huge (kB)");
+	printf("#\n# %8s %11s %12s", "secs", "ops/sec", "huge (kB)");
+	for (op = 0; op < NR_OPS; op++) {
+		if (!op_weight[op])
+			continue;
+		printf(" %-23s", usemem_ops[op].name);
+	}
+	printf("\n# %8s %11s %12s", "", "", "");
+	for (op = 0; op < NR_OPS; op++) {
+		if (!op_weight[op])
+			continue;
+		printf(" %7s %7s %7s", "p50", "p99", "p99.9");
+	}
+	printf("\n");
 
 	while (!done && !all_finished(threads)) {
 		u64 now, nr_ops;
@@ -736,10 +788,25 @@ static void run_intervals(struct usemem_thread *threads, u64 start_ns)
 		now = now_ns();
 		nr_ops = ops_so_far(threads);
 
-		printf("  %10.3f %12.0f %14lu\n",
+		printf("  %8.3f %11.0f %12lu",
 		       (double)(now - start_ns) / NSEC_PER_SEC,
 		       (nr_ops - last_ops) * (double)NSEC_PER_SEC / tick,
 		       anon_huge_kb());
+
+		for (op = 0; op < NR_OPS; op++) {
+			struct hist total, delta;
+
+			if (!op_weight[op])
+				continue;
+
+			hist_total(&total, threads, op);
+			hist_delta(&delta, &total, &prev[op]);
+			printf(" %7" PRIu64 " %7" PRIu64 " %7" PRIu64,
+			       hist_percentile(&delta, 50),
+			       hist_percentile(&delta, 99),
+			       hist_percentile(&delta, 99.9));
+		}
+		printf("\n");
 		fflush(stdout);
 
 		last_ops = nr_ops;
