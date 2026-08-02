@@ -134,6 +134,7 @@ static unsigned long	nr_loops;
 static unsigned int	seed		= 1;
 static int		thp;
 static bool		populate	= true;
+static bool		populate_small;
 
 static const struct option options[] = {
 	OPT_STRING('s', "size", &size_str, "128MB",
@@ -165,6 +166,9 @@ static const struct option options[] = {
 		    "MADV_NOHUGEPAGE < 0 < MADV_HUGEPAGE"),
 	OPT_BOOLEAN(0, "populate", &populate,
 		    "Fault the regions in before measuring (default: yes)"),
+	OPT_BOOLEAN(0, "populate-small", &populate_small,
+		    "Fault the regions in with small pages, and ask for the "
+		    "huge page hint only afterwards"),
 	OPT_END()
 };
 
@@ -749,17 +753,33 @@ static u8 *alloc_region(void)
 	       (unsigned long)map + align_size - addr);
 	map = (u8 *)addr;
 
-	if (thp && madvise(map, region_size,
-			   thp > 0 ? MADV_HUGEPAGE : MADV_NOHUGEPAGE) < 0) {
-		fprintf(stderr, "Huge page hint refused: %s\n", strerror(errno));
-		munmap(map, region_size);
-		return NULL;
+	/*
+	 * Faulting the region in with the hint already on it is how a workload
+	 * that wants huge pages gets them, and leaves nothing behind to collapse.
+	 * --populate-small is the other order: refuse huge pages, fault every
+	 * page in small, and only then ask for the hint, so the region starts
+	 * out as the small pages a collapse has to gather.
+	 */
+	if (populate_small) {
+		if (madvise(map, region_size, MADV_NOHUGEPAGE) < 0)
+			goto refused;
+
+		memset(map, 0, region_size);
 	}
 
-	if (populate)
+	if (thp && madvise(map, region_size,
+			   thp > 0 ? MADV_HUGEPAGE : MADV_NOHUGEPAGE) < 0)
+		goto refused;
+
+	if (populate && !populate_small)
 		memset(map, 0, region_size);
 
 	return map;
+refused:
+	fprintf(stderr, "Huge page hint refused: %s\n", strerror(errno));
+	munmap(map, region_size);
+
+	return NULL;
 }
 
 static int parse_ops(void)

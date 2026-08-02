@@ -353,6 +353,12 @@ Fault the regions in before measuring (default: yes).  Pass
 --no-populate to have the workload take the first fault on each page
 itself.
 
+--populate-small::
+Fault the regions in with small pages, refusing huge ones while doing so,
+and ask for the hint given by --thp only afterwards.  A region then starts
+out as the small pages a collapse has to gather, rather than as the huge
+pages the faults would otherwise have been given.
+
 SUITES FOR 'numa'
 ~~~~~~~~~~~~~~~~~
 *mem*::
