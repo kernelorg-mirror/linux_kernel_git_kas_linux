@@ -1572,6 +1572,55 @@ static void collapse_order_sub_pmd_range(struct collapse_context *c,
 	__collapse_order_sub_pmd_vma(c, ops, nr_windows, __func__);
 }
 
+/*
+ * A partially populated window in a sub-PMD VMA: population and
+ * sub-PMD eligibility at once. The unfaulted slots must come back
+ * zero-filled in the collapsed folio, and the faulted ones unchanged.
+ */
+static void collapse_order_sub_pmd_holes(struct collapse_context *c,
+					 struct mem_ops *ops)
+{
+	size_t size = mthp_window_size();
+	char *bytes;
+	void *p;
+	size_t i;
+
+	mthp_push_target_order();
+
+	p = mmap(BASE_ADDR, size, PROT_READ | PROT_WRITE,
+		 MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	bytes = p;
+	if (p != BASE_ADDR)
+		ksft_exit_fail_msg("Failed to allocate VMA at %p\n", BASE_ADDR);
+
+	fill_memory(p, 0, page_size);
+	if (any_window_at_order(p, size))
+		ksft_exit_fail_msg("Unexpected large folio after fault\n");
+
+	madvise(p, size, MADV_HUGEPAGE);
+	ksft_print_msg("Collapse hole-y window inside a sub-PMD VMA...");
+	if (!khugepaged_full_pass(MTHP_PASS_TIMEOUT_S)) {
+		fail("Timeout");
+	} else if (all_windows_at_order(p, size)) {
+		/* The unfaulted tail must be zero-filled. */
+		for (i = page_size; i < size; i++) {
+			if (bytes[i])
+				break;
+		}
+		if (i == size)
+			success("OK");
+		else
+			fail("Fail");
+	} else {
+		fail("Fail");
+	}
+
+	validate_memory(p, 0, page_size);
+	munmap(p, size);
+	thp_pop_settings();
+	ksft_test_result_report(exit_status, "%s\n", __func__);
+}
+
 static void usage(void)
 {
 	fprintf(stderr, "\nUsage: ./khugepaged [OPTIONS] <test type> [dir]\n\n");
@@ -1848,6 +1897,7 @@ int main(int argc, char **argv)
 		TEST(collapse_order_mixed_sources, mthp_khugepaged_context, anon_ops);
 		TEST(collapse_order_sub_pmd_vma, mthp_khugepaged_context, anon_ops);
 		TEST(collapse_order_sub_pmd_range, mthp_khugepaged_context, anon_ops);
+		TEST(collapse_order_sub_pmd_holes, mthp_khugepaged_context, anon_ops);
 	}
 
 	TEST(collapse_full, madvise_context, anon_ops);
