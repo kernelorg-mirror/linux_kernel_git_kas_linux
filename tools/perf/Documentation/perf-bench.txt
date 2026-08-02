@@ -278,6 +278,60 @@ Use perf's cpu-cycles event instead of gettimeofday syscall.
 --threads=<NUM>::
 Create multiple threads to call mmap/munmap concurrently.
 
+*usemem*::
+Suite for evaluating what a memory workload sees.  Threads share one
+address space and run a weighted mix of operations over long-lived
+regions; each operation is timed, and the latency distribution of each
+kind is reported.
+
+Options of *usemem*
+^^^^^^^^^^^^^^^^^^^
+-s::
+--size::
+Specify the size of the region each thread works on (default: 128MB).
+Available units are B, KB, MB, GB and TB (case insensitive).
+
+-o::
+--ops::
+Specify the operation mix as a comma separated list of
+<operation>[:<weight>] (default: read,write).  An operation is drawn at
+random for each iteration, with a probability given by its weight
+relative to the sum of them all; a weight defaults to 1.  Pass "help" to
+list the available operations.
+
+-t::
+--threads::
+Specify the number of threads to run (default: 1).
+
+-r::
+--runtime::
+Specify how many seconds to run for, 0 for no limit (default: 5).
+
+-l::
+--loops::
+Specify how many operations to run per thread, 0 for no limit
+(default: 0).
+
+--sequential::
+Walk each region in order rather than picking pages at random.
+
+-S::
+--seed::
+Seed the per-thread random number generators (default: 1).  A run with
+the same seed and the same options issues the same operations in the
+same order.
+
+-H::
+--thp::
+Ask for huge pages in the regions with madvise(MADV_HUGEPAGE) when
+positive, refuse them with madvise(MADV_NOHUGEPAGE) when negative, and
+leave the decision to the kernel when zero (default: 0).
+
+--populate::
+Fault the regions in before measuring (default: yes).  Pass
+--no-populate to have the workload take the first fault on each page
+itself.
+
 SUITES FOR 'numa'
 ~~~~~~~~~~~~~~~~~
 *mem*::

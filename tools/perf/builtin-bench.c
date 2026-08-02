@@ -66,6 +66,7 @@ static const struct bench mem_benchmarks[] = {
 	{ "memset",	"Benchmark for memset() functions",		bench_mem_memset	},
 	{ "find_bit",	"Benchmark for find_bit() functions",		bench_mem_find_bit	},
 	{ "mmap",	"Benchmark for mmap() mappings",		bench_mem_mmap		},
+	{ "usemem",	"Benchmark for parameterized memory workloads",	bench_mem_usemem	},
 	{ "all",	"Run all memory access benchmarks",		NULL			},
 	{ NULL,		NULL,						NULL			}
 };
