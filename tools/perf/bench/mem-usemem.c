@@ -69,6 +69,7 @@ enum usemem_op_id {
 	OP_MUNMAP,
 	OP_MPROTECT,
 	OP_DONTNEED,
+	OP_PUNCH,
 	OP_FREE,
 	OP_COLD,
 	OP_PAGEOUT,
@@ -481,6 +482,20 @@ static enum usemem_result op_dontneed(struct usemem_thread *t)
 	return op_advise(t, MADV_DONTNEED);
 }
 
+/*
+ * Discard a single page, which is what a workload does when it frees one thing
+ * out of many.  It is also what turns a huge page back into the small pages a
+ * collapse gathers: the mapping has to be broken up to punch one page out of
+ * it, and everything around the hole stays where it was.
+ */
+static enum usemem_result op_punch(struct usemem_thread *t)
+{
+	if (madvise(pick_page(t), page_size, MADV_DONTNEED))
+		return usemem_failed(t);
+
+	return USEMEM_DONE;
+}
+
 static enum usemem_result op_free(struct usemem_thread *t)
 {
 	return op_advise(t, MADV_FREE);
@@ -550,6 +565,8 @@ static const struct usemem_op {
 			    op_mprotect, true },
 	[OP_DONTNEED]	= { "dontneed", "madvise(MADV_DONTNEED) a chunk",
 			    op_dontneed, true },
+	[OP_PUNCH]	= { "punch", "madvise(MADV_DONTNEED) one page",
+			    op_punch },
 	[OP_FREE]	= { "free", "madvise(MADV_FREE) a chunk",
 			    op_free, true },
 	[OP_COLD]	= { "cold", "madvise(MADV_COLD) a chunk",
