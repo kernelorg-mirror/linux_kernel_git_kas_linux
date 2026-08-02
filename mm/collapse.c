@@ -2147,6 +2147,8 @@ out:
 		cc->select_orders &= ~BIT(HPAGE_PMD_ORDER);
 
 	cc->scan_unmapped = unmapped;
+	trace_mm_collapse_scan(vma->vm_mm, start, none_or_zero, unmapped,
+			       cc->select_orders, result);
 	return result;
 }
 
