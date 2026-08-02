@@ -297,7 +297,10 @@ Available units are B, KB, MB, GB and TB (case insensitive).
 Specify the size of the chunk the address space operations work on
 (default: 2MB).  Available units are B, KB, MB, GB and TB (case
 insensitive).  A region is a whole number of chunks; the rest of the size
-asked for goes unused.
+asked for goes unused.  The default is the granularity allocators work at
+when they hint memory towards and away from huge pages.  On an
+architecture whose PMD covers more than 2MB, a chunk that size is too
+small to hold a huge page.
 
 -o::
 --ops::
@@ -342,7 +345,8 @@ same order.
 --thp::
 Ask for huge pages in the regions with madvise(MADV_HUGEPAGE) when
 positive, refuse them with madvise(MADV_NOHUGEPAGE) when negative, and
-leave the decision to the kernel when zero (default: 0).
+leave the decision to the kernel when zero (default: 0).  This is also the
+hint the thp-toggle operation starts from.
 
 --populate::
 Fault the regions in before measuring (default: yes).  Pass

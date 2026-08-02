@@ -74,6 +74,7 @@ enum usemem_op_id {
 	OP_PAGEOUT,
 	OP_HUGEPAGE,
 	OP_NOHUGEPAGE,
+	OP_THP_TOGGLE,
 	OP_COLLAPSE,
 	NR_OPS
 };
@@ -116,6 +117,9 @@ struct usemem_thread {
 	/* Which chunks of the region are mapped, and how many are not */
 	bool		*mapped;
 	unsigned int	nr_holes;
+
+	/* Which chunks the huge page hint is on, so a toggle knows which way */
+	bool		*hinted;
 };
 
 static const char	*size_str	= "128MB";
@@ -381,6 +385,7 @@ static enum usemem_result op_mmap(struct usemem_thread *t)
 	if (thp)
 		madvise(addr, chunk_size,
 			thp > 0 ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+	t->hinted[chunk] = thp > 0;
 
 	t->mapped[chunk] = true;
 	t->nr_holes--;
@@ -432,6 +437,15 @@ static enum usemem_result op_mprotect(struct usemem_thread *t)
 	return USEMEM_DONE;
 }
 
+static enum usemem_result advise_chunk(struct usemem_thread *t, int chunk,
+				       int advice)
+{
+	if (madvise(t->region + chunk * chunk_size, chunk_size, advice))
+		return usemem_failed(t);
+
+	return USEMEM_DONE;
+}
+
 static enum usemem_result op_advise(struct usemem_thread *t, int advice)
 {
 	int chunk = pick_chunk(t, true);
@@ -439,10 +453,23 @@ static enum usemem_result op_advise(struct usemem_thread *t, int advice)
 	if (chunk < 0)
 		return USEMEM_NOTHING;
 
-	if (madvise(t->region + chunk * chunk_size, chunk_size, advice))
-		return usemem_failed(t);
+	return advise_chunk(t, chunk, advice);
+}
 
-	return USEMEM_DONE;
+/* Whether the chunk carries the hint has to follow whether it was accepted */
+static enum usemem_result op_hint(struct usemem_thread *t, bool huge)
+{
+	int chunk = pick_chunk(t, true);
+	enum usemem_result res;
+
+	if (chunk < 0)
+		return USEMEM_NOTHING;
+
+	res = advise_chunk(t, chunk, huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+	if (res == USEMEM_DONE)
+		t->hinted[chunk] = huge;
+
+	return res;
 }
 
 static enum usemem_result op_dontneed(struct usemem_thread *t)
@@ -467,12 +494,36 @@ static enum usemem_result op_pageout(struct usemem_thread *t)
 
 static enum usemem_result op_hugepage(struct usemem_thread *t)
 {
-	return op_advise(t, MADV_HUGEPAGE);
+	return op_hint(t, true);
 }
 
 static enum usemem_result op_nohugepage(struct usemem_thread *t)
 {
-	return op_advise(t, MADV_NOHUGEPAGE);
+	return op_hint(t, false);
+}
+
+/*
+ * Turn the hint on a chunk around, whichever way it currently points.  This is
+ * what an allocator does with the memory it hands out: hinted towards huge
+ * pages while a chunk is in use, hinted away from them when it is given back,
+ * over and over on the same address.  Unlike the two operations above, which
+ * mostly ask for a hint a chunk already has, every one of these is a change.
+ */
+static enum usemem_result op_thp_toggle(struct usemem_thread *t)
+{
+	int chunk = pick_chunk(t, true);
+	bool huge;
+	enum usemem_result res;
+
+	if (chunk < 0)
+		return USEMEM_NOTHING;
+
+	huge = !t->hinted[chunk];
+	res = advise_chunk(t, chunk, huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+	if (res == USEMEM_DONE)
+		t->hinted[chunk] = huge;
+
+	return res;
 }
 
 static enum usemem_result op_collapse(struct usemem_thread *t)
@@ -505,6 +556,8 @@ static const struct usemem_op {
 			    op_hugepage, true },
 	[OP_NOHUGEPAGE]	= { "nohugepage", "madvise(MADV_NOHUGEPAGE) a chunk",
 			    op_nohugepage, true },
+	[OP_THP_TOGGLE]	= { "thp-toggle", "Turn a chunk's huge page hint around",
+			    op_thp_toggle, true },
 	[OP_COLLAPSE]	= { "collapse", "madvise(MADV_COLLAPSE) a chunk",
 			    op_collapse, true },
 };
@@ -973,6 +1026,15 @@ int bench_mem_usemem(int argc, const char **argv)
 			goto out;
 		}
 		memset(t->mapped, true, nr_chunks * sizeof(*t->mapped));
+
+		/* The whole region was hinted at once, or not at all */
+		t->hinted = calloc(nr_chunks, sizeof(*t->hinted));
+		if (!t->hinted) {
+			ret = -ENOMEM;
+			goto out;
+		}
+		if (thp > 0)
+			memset(t->hinted, true, nr_chunks * sizeof(*t->hinted));
 	}
 
 	act.sa_flags = SA_SIGINFO;
@@ -1028,6 +1090,7 @@ out:
 		if (threads[i].region)
 			munmap(threads[i].region, region_size);
 		free(threads[i].mapped);
+		free(threads[i].hinted);
 	}
 	free(threads);
 
