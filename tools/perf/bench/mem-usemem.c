@@ -131,6 +131,7 @@ static unsigned int	holes_pct	= 25;
 static unsigned int	nr_threads	= 1;
 static unsigned int	nr_secs		= 5;
 static unsigned int	interval_ms;
+static unsigned int	sleep_usecs;
 static unsigned long	nr_loops;
 static unsigned int	seed		= 1;
 static int		thp;
@@ -158,6 +159,9 @@ static const struct option options[] = {
 		     "Report progress every so many milliseconds"),
 	OPT_ULONG('l', "loops", &nr_loops,
 		  "Operations to run per thread, 0 for no limit (default: 0)"),
+	OPT_UINTEGER('u', "usleep", &sleep_usecs,
+		     "Microseconds to sleep between operations, to pace the "
+		     "workload rather than run it flat out"),
 	OPT_BOOLEAN(0, "sequential", &access_seq,
 		    "Walk the region in order rather than at random"),
 	OPT_UINTEGER('S', "seed", &seed,
@@ -198,6 +202,16 @@ static u64 now_ns(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (u64)ts.tv_sec * NSEC_PER_SEC + ts.tv_nsec;
+}
+
+static void sleep_ns(u64 ns)
+{
+	struct timespec ts = {
+		.tv_sec = ns / NSEC_PER_SEC,
+		.tv_nsec = ns % NSEC_PER_SEC,
+	};
+
+	nanosleep(&ts, NULL);
 }
 
 /* xorshift64*, so that a run repeats given the same seed */
@@ -629,6 +643,9 @@ static void *worker_thread(void *arg)
 		t->nr_iters++;
 		if (nr_loops && t->nr_iters >= nr_loops)
 			break;
+
+		if (sleep_usecs)
+			sleep_ns((u64)sleep_usecs * NSEC_PER_USEC);
 	}
 
 	t->finished = true;
@@ -697,14 +714,9 @@ static bool all_finished(struct usemem_thread *threads)
 static void sleep_until(u64 when)
 {
 	u64 now = now_ns();
-	struct timespec ts;
 
-	if (now >= when)
-		return;
-
-	ts.tv_sec = (when - now) / NSEC_PER_SEC;
-	ts.tv_nsec = (when - now) % NSEC_PER_SEC;
-	nanosleep(&ts, NULL);
+	if (now < when)
+		sleep_ns(when - now);
 }
 
 static void run_intervals(struct usemem_thread *threads, u64 start_ns)

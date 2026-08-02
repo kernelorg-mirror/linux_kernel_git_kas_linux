@@ -327,6 +327,12 @@ Specify how many seconds to run for, 0 for no limit (default: 5).
 Specify how many operations to run per thread, 0 for no limit
 (default: 0).
 
+-u::
+--usleep::
+Sleep this many microseconds between operations (default: 0).  This paces
+the workload at a rate rather than running it flat out, so that a region
+can be held and used lightly while something else works on it.
+
 -i::
 --interval::
 Report the operation rate and how much of the address space huge pages
