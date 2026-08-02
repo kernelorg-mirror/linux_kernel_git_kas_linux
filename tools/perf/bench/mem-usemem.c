@@ -33,9 +33,48 @@
 #include <linux/types.h>
 #include <linux/time64.h>
 
+/*
+ * The madvise() behaviours a workload asks for by hand, defined here for a
+ * libc that predates them.
+ */
+#ifndef MADV_FREE
+# define MADV_FREE	8
+#endif
+#ifndef MADV_COLD
+# define MADV_COLD	20
+#endif
+#ifndef MADV_PAGEOUT
+# define MADV_PAGEOUT	21
+#endif
+#ifndef MADV_COLLAPSE
+# define MADV_COLLAPSE	25
+#endif
+
+/*
+ * An operation that found nothing in the region to work on is not a failure and
+ * is not timed: it is the mix asking for more than the region can offer, an mmap
+ * with every chunk already mapped or an munmap with the share of them it may
+ * unmap used up.  A failure is the kernel refusing, and worth telling apart.
+ */
+enum usemem_result {
+	USEMEM_DONE,
+	USEMEM_NOTHING,
+	USEMEM_FAILED,
+};
+
 enum usemem_op_id {
 	OP_READ,
 	OP_WRITE,
+	OP_MMAP,
+	OP_MUNMAP,
+	OP_MPROTECT,
+	OP_DONTNEED,
+	OP_FREE,
+	OP_COLD,
+	OP_PAGEOUT,
+	OP_HUGEPAGE,
+	OP_NOHUGEPAGE,
+	OP_COLLAPSE,
 	NR_OPS
 };
 
@@ -67,12 +106,22 @@ struct usemem_thread {
 	u64		rnd_state;
 	u64		nr_iters;
 	struct hist	hist[NR_OPS];
+	u64		nothing[NR_OPS];
+	u64		failed[NR_OPS];
+	int		error[NR_OPS];
+	int		last_error;
 	u64		sink;
+
+	/* Which chunks of the region are mapped, and how many are not */
+	bool		*mapped;
+	unsigned int	nr_holes;
 };
 
 static const char	*size_str	= "128MB";
+static const char	*chunk_str	= "2MB";
 static const char	*ops_str	= "read,write";
 static bool		access_seq;
+static unsigned int	holes_pct	= 25;
 static unsigned int	nr_threads	= 1;
 static unsigned int	nr_secs		= 5;
 static unsigned long	nr_loops;
@@ -84,9 +133,15 @@ static const struct option options[] = {
 	OPT_STRING('s', "size", &size_str, "128MB",
 		   "Size of the region each thread works on. "
 		   "Available units: B, KB, MB, GB and TB (case insensitive)"),
+	OPT_STRING('k', "chunk", &chunk_str, "2MB",
+		   "Size of the chunk the address space operations work on. "
+		   "Available units: B, KB, MB, GB and TB (case insensitive)"),
 	OPT_STRING('o', "ops", &ops_str, "read,write",
 		   "Operation mix, as a comma separated list of "
 		   "<operation>[:<weight>]; \"help\" lists the operations"),
+	OPT_UINTEGER(0, "holes", &holes_pct,
+		     "Share of a region munmap may leave unmapped, "
+		     "as a percentage (default: 25)"),
 	OPT_UINTEGER('t', "threads", &nr_threads,
 		     "Number of threads to run (default: 1)"),
 	OPT_UINTEGER('r', "runtime", &nr_secs,
@@ -115,6 +170,9 @@ static unsigned int	total_weight;
 static size_t		region_size;
 static size_t		page_size;
 static size_t		align_size;
+static size_t		chunk_size;
+static unsigned int	nr_chunks;
+static unsigned int	max_holes;
 
 static struct mutex	start_lock;
 static struct cond	start_parent, start_worker;
@@ -220,21 +278,64 @@ static u64 hist_percentile(const struct hist *h, double pct)
 	return h->max;
 }
 
+/*
+ * Scan for a chunk in the state an operation needs, starting where it asked, so
+ * that an operation gives up only when the whole region holds nothing for it.
+ */
+static int chunk_from(struct usemem_thread *t, unsigned int start, bool mapped)
+{
+	unsigned int i;
+
+	for (i = 0; i < nr_chunks; i++) {
+		unsigned int chunk = (start + i) % nr_chunks;
+
+		if (t->mapped[chunk] == mapped)
+			return chunk;
+	}
+
+	return -1;
+}
+
+static int pick_chunk(struct usemem_thread *t, bool mapped)
+{
+	return chunk_from(t, rnd(t) % nr_chunks, mapped);
+}
+
 /* One page per access, so a fault dominates the operation when there is one */
 static u8 *pick_page(struct usemem_thread *t)
 {
+	unsigned long pages_per_chunk = chunk_size / page_size;
 	unsigned long page;
+	int chunk;
 
 	if (access_seq)
 		page = t->cursor++ % t->nr_pages;
 	else
 		page = rnd(t) % t->nr_pages;
 
+	chunk = page / pages_per_chunk;
+	if (!t->mapped[chunk]) {
+		/*
+		 * The page fell in a hole.  Keep its offset within the chunk but
+		 * move to one that is mapped, of which a region always has one.
+		 */
+		chunk = chunk_from(t, chunk, true);
+		page = (unsigned long)chunk * pages_per_chunk +
+			page % pages_per_chunk;
+	}
+
 	return t->region + page * page_size;
 }
 
+static enum usemem_result usemem_failed(struct usemem_thread *t)
+{
+	t->last_error = errno;
+
+	return USEMEM_FAILED;
+}
+
 /* One word per cache line: the whole page is touched, none of it twice */
-static void op_read(struct usemem_thread *t)
+static enum usemem_result op_read(struct usemem_thread *t)
 {
 	const u64 *p = (const u64 *)pick_page(t);
 	u64 sum = 0;
@@ -244,24 +345,164 @@ static void op_read(struct usemem_thread *t)
 		sum += p[i];
 
 	t->sink += sum;
+
+	return USEMEM_DONE;
 }
 
-static void op_write(struct usemem_thread *t)
+static enum usemem_result op_write(struct usemem_thread *t)
 {
 	u64 *p = (u64 *)pick_page(t);
 	size_t i;
 
 	for (i = 0; i < page_size / sizeof(*p); i += 8)
 		p[i] = t->nr_iters;
+
+	return USEMEM_DONE;
+}
+
+static enum usemem_result op_mmap(struct usemem_thread *t)
+{
+	int chunk = pick_chunk(t, false);
+	u8 *addr;
+
+	if (chunk < 0)
+		return USEMEM_NOTHING;
+
+	addr = t->region + chunk * chunk_size;
+	if (mmap(addr, chunk_size, PROT_READ | PROT_WRITE,
+		 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
+		return usemem_failed(t);
+
+	/* The new mapping does not inherit the hint the region was given */
+	if (thp)
+		madvise(addr, chunk_size,
+			thp > 0 ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+
+	t->mapped[chunk] = true;
+	t->nr_holes--;
+
+	return USEMEM_DONE;
+}
+
+static enum usemem_result op_munmap(struct usemem_thread *t)
+{
+	int chunk;
+
+	if (t->nr_holes >= max_holes)
+		return USEMEM_NOTHING;
+
+	chunk = pick_chunk(t, true);
+	if (chunk < 0)
+		return USEMEM_NOTHING;
+
+	if (munmap(t->region + chunk * chunk_size, chunk_size))
+		return usemem_failed(t);
+
+	t->mapped[chunk] = false;
+	t->nr_holes++;
+
+	return USEMEM_DONE;
+}
+
+/* Read-only and straight back: what a workload watching for writes does */
+static enum usemem_result op_mprotect(struct usemem_thread *t)
+{
+	int chunk = pick_chunk(t, true);
+	u8 *addr;
+
+	if (chunk < 0)
+		return USEMEM_NOTHING;
+
+	addr = t->region + chunk * chunk_size;
+	if (mprotect(addr, chunk_size, PROT_READ))
+		return usemem_failed(t);
+
+	if (mprotect(addr, chunk_size, PROT_READ | PROT_WRITE)) {
+		/* The chunk would stay read-only and take the next write with it */
+		fprintf(stderr, "Cannot restore write access: %s\n",
+			strerror(errno));
+		done = true;
+		return usemem_failed(t);
+	}
+
+	return USEMEM_DONE;
+}
+
+static enum usemem_result op_advise(struct usemem_thread *t, int advice)
+{
+	int chunk = pick_chunk(t, true);
+
+	if (chunk < 0)
+		return USEMEM_NOTHING;
+
+	if (madvise(t->region + chunk * chunk_size, chunk_size, advice))
+		return usemem_failed(t);
+
+	return USEMEM_DONE;
+}
+
+static enum usemem_result op_dontneed(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_DONTNEED);
+}
+
+static enum usemem_result op_free(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_FREE);
+}
+
+static enum usemem_result op_cold(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_COLD);
+}
+
+static enum usemem_result op_pageout(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_PAGEOUT);
+}
+
+static enum usemem_result op_hugepage(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_HUGEPAGE);
+}
+
+static enum usemem_result op_nohugepage(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_NOHUGEPAGE);
+}
+
+static enum usemem_result op_collapse(struct usemem_thread *t)
+{
+	return op_advise(t, MADV_COLLAPSE);
 }
 
 static const struct usemem_op {
 	const char *name;
 	const char *desc;
-	void (*run)(struct usemem_thread *t);
+	enum usemem_result (*run)(struct usemem_thread *t);
+	bool chunked;
 } usemem_ops[NR_OPS] = {
 	[OP_READ]	= { "read",  "Read one page of the region",  op_read  },
 	[OP_WRITE]	= { "write", "Write one page of the region", op_write },
+	[OP_MMAP]	= { "mmap", "Map a chunk that is unmapped",
+			    op_mmap, true },
+	[OP_MUNMAP]	= { "munmap", "Unmap a chunk", op_munmap, true },
+	[OP_MPROTECT]	= { "mprotect", "Turn a chunk read-only and back",
+			    op_mprotect, true },
+	[OP_DONTNEED]	= { "dontneed", "madvise(MADV_DONTNEED) a chunk",
+			    op_dontneed, true },
+	[OP_FREE]	= { "free", "madvise(MADV_FREE) a chunk",
+			    op_free, true },
+	[OP_COLD]	= { "cold", "madvise(MADV_COLD) a chunk",
+			    op_cold, true },
+	[OP_PAGEOUT]	= { "pageout", "madvise(MADV_PAGEOUT) a chunk",
+			    op_pageout, true },
+	[OP_HUGEPAGE]	= { "hugepage", "madvise(MADV_HUGEPAGE) a chunk",
+			    op_hugepage, true },
+	[OP_NOHUGEPAGE]	= { "nohugepage", "madvise(MADV_NOHUGEPAGE) a chunk",
+			    op_nohugepage, true },
+	[OP_COLLAPSE]	= { "collapse", "madvise(MADV_COLLAPSE) a chunk",
+			    op_collapse, true },
 };
 
 static enum usemem_op_id pick_op(struct usemem_thread *t)
@@ -290,13 +531,22 @@ static void *worker_thread(void *arg)
 
 	while (!done) {
 		enum usemem_op_id op = pick_op(t);
+		enum usemem_result res;
 		u64 start, end;
 
 		start = now_ns();
-		usemem_ops[op].run(t);
+		res = usemem_ops[op].run(t);
 		end = now_ns();
 
-		hist_add(&t->hist[op], end - start);
+		if (res == USEMEM_DONE) {
+			hist_add(&t->hist[op], end - start);
+		} else if (res == USEMEM_NOTHING) {
+			t->nothing[op]++;
+		} else {
+			t->failed[op]++;
+			if (!t->error[op])
+				t->error[op] = t->last_error;
+		}
 
 		t->nr_iters++;
 		if (nr_loops && t->nr_iters >= nr_loops)
@@ -429,6 +679,14 @@ static void print_header(void)
 	else
 		printf("no huge page hint\n");
 
+	for (i = 0; i < NR_OPS; i++) {
+		if (op_weight[i] && usemem_ops[i].chunked) {
+			printf("# chunks of %s, at most %u of the %u in a region "
+			       "left unmapped\n", chunk_str, max_holes, nr_chunks);
+			break;
+		}
+	}
+
 	printf("# mix:");
 	for (i = 0; i < NR_OPS; i++) {
 		if (!op_weight[i])
@@ -443,20 +701,31 @@ static void print_header(void)
 static void report(struct usemem_thread *threads, u64 runtime_ns)
 {
 	double secs = (double)runtime_ns / NSEC_PER_SEC;
+	u64 nothing[NR_OPS] = { 0 }, failed[NR_OPS] = { 0 };
+	u64 nr_ops = 0, nr_nothing = 0, nr_failed = 0;
+	int error[NR_OPS] = { 0 };
 	struct hist *total;
-	u64 nr_ops = 0;
 	unsigned int i, op;
 
 	total = calloc(NR_OPS, sizeof(*total));
 	if (!total)
 		return;
 
-	for (i = 0; i < nr_threads; i++)
-		for (op = 0; op < NR_OPS; op++)
+	for (i = 0; i < nr_threads; i++) {
+		for (op = 0; op < NR_OPS; op++) {
 			hist_merge(&total[op], &threads[i].hist[op]);
+			nothing[op] += threads[i].nothing[op];
+			failed[op] += threads[i].failed[op];
+			if (!error[op])
+				error[op] = threads[i].error[op];
+		}
+	}
 
-	for (op = 0; op < NR_OPS; op++)
+	for (op = 0; op < NR_OPS; op++) {
 		nr_ops += total[op].nr;
+		nr_nothing += nothing[op];
+		nr_failed += failed[op];
+	}
 
 	if (bench_format == BENCH_FORMAT_SIMPLE) {
 		printf("%lf\n", nr_ops / secs);
@@ -487,6 +756,21 @@ static void report(struct usemem_thread *threads, u64 runtime_ns)
 
 	printf("#\n# %" PRIu64 " operations in %.3f secs, %.0f ops/sec\n",
 	       nr_ops, secs, nr_ops / secs);
+
+	if (nr_nothing) {
+		printf("# nothing to do:");
+		for (op = 0; op < NR_OPS; op++)
+			if (nothing[op])
+				printf(" %s %" PRIu64, usemem_ops[op].name,
+				       nothing[op]);
+		printf("\n");
+	}
+
+	for (op = 0; op < NR_OPS; op++)
+		if (failed[op])
+			printf("# %s refused %" PRIu64 " times: %s\n",
+			       usemem_ops[op].name, failed[op],
+			       strerror(error[op]));
 out:
 	free(total);
 }
@@ -528,12 +812,27 @@ int bench_mem_usemem(int argc, const char **argv)
 	page_size = sysconf(_SC_PAGESIZE);
 	align_size = huge_page_size();
 
-	size = perf_atoll(size_str);
+	size = perf_atoll(chunk_str);
 	if (size < (s64)page_size) {
+		fprintf(stderr, "Invalid chunk: %s\n", chunk_str);
+		return 1;
+	}
+	chunk_size = size & ~(page_size - 1);
+
+	size = perf_atoll(size_str);
+	if (size < (s64)chunk_size) {
 		fprintf(stderr, "Invalid size: %s\n", size_str);
 		return 1;
 	}
-	region_size = size & ~(page_size - 1);
+
+	/* Whole chunks only, so that every operation covers the same amount */
+	nr_chunks = size / chunk_size;
+	region_size = (size_t)nr_chunks * chunk_size;
+
+	/* One chunk always stays mapped, so an access always has a page to take */
+	max_holes = (unsigned long)nr_chunks * holes_pct / 100;
+	if (max_holes >= nr_chunks)
+		max_holes = nr_chunks - 1;
 
 	threads = calloc(nr_threads, sizeof(*threads));
 	if (!threads)
@@ -556,6 +855,13 @@ int bench_mem_usemem(int argc, const char **argv)
 			ret = -ENOMEM;
 			goto out;
 		}
+
+		t->mapped = malloc(nr_chunks * sizeof(*t->mapped));
+		if (!t->mapped) {
+			ret = -ENOMEM;
+			goto out;
+		}
+		memset(t->mapped, true, nr_chunks * sizeof(*t->mapped));
 	}
 
 	act.sa_flags = SA_SIGINFO;
@@ -604,9 +910,11 @@ int bench_mem_usemem(int argc, const char **argv)
 	if (!ret)
 		report(threads, runtime_ns);
 out:
-	for (i = 0; i < nr_threads; i++)
+	for (i = 0; i < nr_threads; i++) {
 		if (threads[i].region)
 			munmap(threads[i].region, region_size);
+		free(threads[i].mapped);
+	}
 	free(threads);
 
 	return ret ? 1 : 0;

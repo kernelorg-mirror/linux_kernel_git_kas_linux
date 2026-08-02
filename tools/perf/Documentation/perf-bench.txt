@@ -282,7 +282,8 @@ Create multiple threads to call mmap/munmap concurrently.
 Suite for evaluating what a memory workload sees.  Threads share one
 address space and run a weighted mix of operations over long-lived
 regions; each operation is timed, and the latency distribution of each
-kind is reported.
+kind is reported.  An operation either touches one page of a region or
+acts on one chunk of it with mmap, munmap, mprotect or madvise.
 
 Options of *usemem*
 ^^^^^^^^^^^^^^^^^^^
@@ -291,6 +292,13 @@ Options of *usemem*
 Specify the size of the region each thread works on (default: 128MB).
 Available units are B, KB, MB, GB and TB (case insensitive).
 
+-k::
+--chunk::
+Specify the size of the chunk the address space operations work on
+(default: 2MB).  Available units are B, KB, MB, GB and TB (case
+insensitive).  A region is a whole number of chunks; the rest of the size
+asked for goes unused.
+
 -o::
 --ops::
 Specify the operation mix as a comma separated list of
@@ -298,6 +306,10 @@ Specify the operation mix as a comma separated list of
 random for each iteration, with a probability given by its weight
 relative to the sum of them all; a weight defaults to 1.  Pass "help" to
 list the available operations.
+
+--holes::
+Specify the share of a region, as a percentage, that the munmap operation
+may leave unmapped (default: 25).  One chunk always stays mapped.
 
 -t::
 --threads::
