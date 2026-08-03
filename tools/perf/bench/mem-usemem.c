@@ -21,12 +21,15 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 #include <linux/compiler.h>
@@ -60,6 +63,17 @@ enum usemem_result {
 	USEMEM_DONE,
 	USEMEM_NOTHING,
 	USEMEM_FAILED,
+};
+
+/*
+ * What the regions are made of.  Anonymous memory is one collapse path, the
+ * page cache is another, and shmem a third with rules of its own; a workload
+ * that can only be anonymous cannot say anything about the other two.
+ */
+enum usemem_backing {
+	BACKING_ANON,
+	BACKING_SHMEM,
+	BACKING_FILE,
 };
 
 enum usemem_op_id {
@@ -121,6 +135,9 @@ struct usemem_thread {
 
 	/* Which chunks the huge page hint is on, so a toggle knows which way */
 	bool		*hinted;
+
+	/* What the region is mapped from; -1 when it is anonymous */
+	int		fd;
 };
 
 static const char	*size_str	= "128MB";
@@ -137,6 +154,9 @@ static unsigned int	seed		= 1;
 static int		thp;
 static bool		populate	= true;
 static bool		populate_small;
+static const char	*backing_str	= "anon";
+static const char	*file_dir	= "/tmp";
+static enum usemem_backing backing	= BACKING_ANON;
 
 static const struct option options[] = {
 	OPT_STRING('s', "size", &size_str, "128MB",
@@ -171,6 +191,10 @@ static const struct option options[] = {
 		    "MADV_NOHUGEPAGE < 0 < MADV_HUGEPAGE"),
 	OPT_BOOLEAN(0, "populate", &populate,
 		    "Fault the regions in before measuring (default: yes)"),
+	OPT_STRING('b', "backing", &backing_str, "anon",
+		   "What the regions are mapped from: anon, shmem or file"),
+	OPT_STRING(0, "file-dir", &file_dir, "/tmp",
+		   "Where to put the files for --backing file (default: /tmp)"),
 	OPT_BOOLEAN(0, "populate-small", &populate_small,
 		    "Fault the regions in with small pages, and ask for the "
 		    "huge page hint only afterwards"),
@@ -306,6 +330,58 @@ static u64 hist_percentile(const struct hist *h, double pct)
 }
 
 /*
+ * The backing store for one thread's region: nothing for anonymous memory, a
+ * memfd for shmem, a file of its own for the page cache.  Shared rather than
+ * private, because a private mapping of a file is anonymous memory once it is
+ * written to and would say nothing about the page cache.
+ */
+static int open_backing(unsigned int nr)
+{
+	char path[PATH_MAX];
+	int fd;
+
+	switch (backing) {
+	case BACKING_ANON:
+		return -1;
+	case BACKING_SHMEM:
+		fd = memfd_create("usemem", MFD_CLOEXEC);
+		break;
+	case BACKING_FILE:
+		snprintf(path, sizeof(path), "%s/usemem.%d.%u", file_dir,
+			 getpid(), nr);
+		fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
+		if (fd >= 0)
+			unlink(path);	/* it lives as long as the mapping */
+		break;
+	default:
+		return -1;
+	}
+
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open the %s backing: %s\n",
+			backing_str, strerror(errno));
+		return -1;
+	}
+	if (ftruncate(fd, region_size)) {
+		fprintf(stderr, "Cannot size the %s backing: %s\n",
+			backing_str, strerror(errno));
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+static void *map_chunk(struct usemem_thread *t, void *addr, size_t len,
+		       size_t offset, int extra_flags)
+{
+	const int flags = (backing == BACKING_ANON ? MAP_PRIVATE | MAP_ANONYMOUS
+						   : MAP_SHARED) | extra_flags;
+
+	return mmap(addr, len, PROT_READ | PROT_WRITE, flags, t->fd, offset);
+}
+
+/*
  * Scan for a chunk in the state an operation needs, starting where it asked, so
  * that an operation gives up only when the whole region holds nothing for it.
  */
@@ -396,8 +472,8 @@ static enum usemem_result op_mmap(struct usemem_thread *t)
 		return USEMEM_NOTHING;
 
 	addr = t->region + chunk * chunk_size;
-	if (mmap(addr, chunk_size, PROT_READ | PROT_WRITE,
-		 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
+	if (map_chunk(t, addr, chunk_size, chunk * chunk_size,
+		      MAP_FIXED) == MAP_FAILED)
 		return usemem_failed(t);
 
 	/* The new mapping does not inherit the hint the region was given */
@@ -658,8 +734,11 @@ static void *worker_thread(void *arg)
  * collapse is keeping up with the workload.  This counts what is mapped at the
  * PMD level only; smaller folios do not appear here.
  */
-static unsigned long anon_huge_kb(void)
+static unsigned long huge_kb(void)
 {
+	const char *want = backing == BACKING_ANON ? "AnonHugePages" :
+			   backing == BACKING_SHMEM ? "ShmemPmdMapped" :
+						      "FilePmdMapped";
 	unsigned long kb = 0;
 	char line[256];
 	FILE *f;
@@ -678,9 +757,16 @@ static unsigned long anon_huge_kb(void)
 	if (!f)
 		return 0;
 
-	while (fgets(line, sizeof(line), f))
-		if (sscanf(line, "AnonHugePages: %lu kB", &kb) == 1)
+	while (fgets(line, sizeof(line), f)) {
+		char name[64];
+		unsigned long v;
+
+		if (sscanf(line, "%63[^:]: %lu kB", name, &v) == 2 &&
+		    !strcmp(name, want)) {
+			kb = v;
 			break;
+		}
+	}
 
 	fclose(f);
 
@@ -791,7 +877,7 @@ static void run_intervals(struct usemem_thread *threads, u64 start_ns)
 		printf("  %8.3f %11.0f %12lu",
 		       (double)(now - start_ns) / NSEC_PER_SEC,
 		       (nr_ops - last_ops) * (double)NSEC_PER_SEC / tick,
-		       anon_huge_kb());
+		       huge_kb());
 
 		for (op = 0; op < NR_OPS; op++) {
 			struct hist total, delta;
@@ -832,13 +918,24 @@ static size_t huge_page_size(void)
 	return size;
 }
 
-static u8 *alloc_region(void)
+static u8 *alloc_region(struct usemem_thread *t)
 {
 	unsigned long addr;
 	u8 *map;
 
-	map = mmap(NULL, region_size + align_size, PROT_READ | PROT_WRITE,
-		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	t->fd = open_backing(t->nr);
+	if (t->fd < 0 && backing != BACKING_ANON)
+		return NULL;
+
+	/*
+	 * Reserve enough address space to align in, trim it down, and only then
+	 * map the region over what is left.  Mapping the backing once the
+	 * address is known keeps chunk N at offset N * chunk_size, so the mmap
+	 * operation can put a chunk back where it was, and keeps the region
+	 * inside the backing rather than running off the end of it.
+	 */
+	map = mmap(NULL, region_size + align_size, PROT_NONE,
+		   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	if (map == MAP_FAILED)
 		return NULL;
 
@@ -848,6 +945,11 @@ static u8 *alloc_region(void)
 	munmap((void *)(addr + region_size),
 	       (unsigned long)map + align_size - addr);
 	map = (u8 *)addr;
+
+	if (map_chunk(t, map, region_size, 0, MAP_FIXED) == MAP_FAILED) {
+		munmap(map, region_size);
+		return NULL;
+	}
 
 	/*
 	 * Faulting the region in with the hint already on it is how a workload
@@ -949,7 +1051,8 @@ static void print_header(void)
 	else
 		printf("# one thread on %s, ", size_str);
 
-	printf("%s access, ", access_seq ? "sequential" : "random");
+	printf("%s, %s access, ", backing_str,
+	       access_seq ? "sequential" : "random");
 	if (thp)
 		printf("MADV_%sHUGEPAGE\n", thp > 0 ? "" : "NO");
 	else
@@ -1049,7 +1152,7 @@ static void report(struct usemem_thread *threads, u64 runtime_ns,
 			       usemem_ops[op].name, failed[op],
 			       strerror(error[op]));
 
-	printf("# huge pages: %lu kB -> %lu kB\n", huge_before, anon_huge_kb());
+	printf("# huge pages: %lu kB -> %lu kB\n", huge_before, huge_kb());
 out:
 	free(total);
 }
@@ -1089,6 +1192,17 @@ int bench_mem_usemem(int argc, const char **argv)
 		return 1;
 	}
 
+	if (!strcmp(backing_str, "anon")) {
+		backing = BACKING_ANON;
+	} else if (!strcmp(backing_str, "shmem")) {
+		backing = BACKING_SHMEM;
+	} else if (!strcmp(backing_str, "file")) {
+		backing = BACKING_FILE;
+	} else {
+		fprintf(stderr, "Unknown backing: %s\n", backing_str);
+		return 1;
+	}
+
 	page_size = sysconf(_SC_PAGESIZE);
 	align_size = huge_page_size();
 
@@ -1118,6 +1232,10 @@ int bench_mem_usemem(int argc, const char **argv)
 	if (!threads)
 		return 1;
 
+	/* Before anything can fail: zero is a file descriptor worth keeping */
+	for (i = 0; i < nr_threads; i++)
+		threads[i].fd = -1;
+
 	if (bench_format == BENCH_FORMAT_DEFAULT)
 		print_header();
 
@@ -1128,7 +1246,7 @@ int bench_mem_usemem(int argc, const char **argv)
 		t->nr_pages = region_size / page_size;
 		/* Distinct streams, still fixed by the seed */
 		t->rnd_state = seed + i * 2654435761UL;
-		t->region = alloc_region();
+		t->region = alloc_region(t);
 		if (!t->region) {
 			fprintf(stderr, "Failed to map %s for thread %u\n",
 				size_str, i);
@@ -1179,7 +1297,7 @@ int bench_mem_usemem(int argc, const char **argv)
 	threads_starting -= nr_threads - nr_started;
 	while (threads_starting)
 		cond_wait(&start_parent, &start_lock);
-	huge_before = anon_huge_kb();
+	huge_before = huge_kb();
 	start_ns = now_ns();
 	cond_broadcast(&start_worker);
 	mutex_unlock(&start_lock);
@@ -1205,6 +1323,8 @@ out:
 	for (i = 0; i < nr_threads; i++) {
 		if (threads[i].region)
 			munmap(threads[i].region, region_size);
+		if (threads[i].fd >= 0)
+			close(threads[i].fd);
 		free(threads[i].mapped);
 		free(threads[i].hinted);
 	}

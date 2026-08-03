@@ -369,6 +369,22 @@ and ask for the hint given by --thp only afterwards.  A region then starts
 out as the small pages a collapse has to gather, rather than as the huge
 pages the faults would otherwise have been given.
 
+-b::
+--backing::
+Specify what the regions are mapped from: 'anon' for anonymous memory,
+'shmem' for a memfd, 'file' for a file of its own per thread
+(default: anon).  A memfd and a file are mapped MAP_SHARED, because a
+private mapping of either becomes anonymous memory as soon as it is
+written to.  The huge page coverage reported follows the backing:
+AnonHugePages, ShmemPmdMapped or FilePmdMapped.  Note that the free
+operation only applies to anonymous memory and the kernel refuses it on
+the other two.
+
+--file-dir::
+Specify where to put the files for --backing file (default: /tmp).  A
+file is unlinked as soon as it is created, so it lives exactly as long as
+the mapping.
+
 SUITES FOR 'numa'
 ~~~~~~~~~~~~~~~~~
 *mem*::
