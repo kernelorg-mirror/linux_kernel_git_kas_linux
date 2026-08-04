@@ -9,6 +9,7 @@
 #include <linux/hugetlb.h>	/* x86 flush_tlb_range() uses hstate_vma() */
 #include <linux/ksm.h>
 #include <linux/leafops.h>
+#include <linux/math64.h>
 #include <linux/memcontrol.h>
 #include <linux/mm.h>
 #include <linux/mmu_notifier.h>
@@ -22,6 +23,7 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/swap.h>
+#include <linux/timekeeping.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/vmstat.h>
 
@@ -1848,6 +1850,8 @@ static void collapse_round(struct mm_struct *mm, unsigned long pmd_addr,
 	struct mmu_notifier_range range;
 	struct vm_area_struct *vma;
 	enum scan_result result;
+	unsigned int nr_installed;
+	u64 latency = 0;
 	pmd_t *pmd;
 
 	collapse_reserve(mm, cc);
@@ -1884,6 +1888,13 @@ retry:
 	mmu_notifier_invalidate_range_start(&range);
 
 	/*
+	 * What the faulters on this batch's sources are made to wait: they sleep
+	 * from the freeze that took their folio's lock to the putback that drops
+	 * it.  Measured per round rather than argued about.
+	 */
+	latency = ktime_get_ns();
+
+	/*
 	 * None of these can fail as a whole: the freeze takes the sources it
 	 * can and drops the candidates it cannot, and each pass after it works
 	 * on what the one before left, so every barrier raised is lowered again.
@@ -1894,12 +1905,16 @@ retry:
 	collapse_install(vma, cc, pmd);
 	collapse_putback(vma, cc);
 
+	latency = ktime_get_ns() - latency;
+
 	mmu_notifier_invalidate_range_end(&range);
 
 out_unlock:
 	mmap_read_unlock(mm);
 out:
-	collapse_finish(mm, cc, result);
+	nr_installed = collapse_finish(mm, cc, result);
+	trace_mm_collapse_round(mm, cc->nr_candidates, nr_installed, result,
+				div_u64(latency, NSEC_PER_USEC));
 }
 
 /*
