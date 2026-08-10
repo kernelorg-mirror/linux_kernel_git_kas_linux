@@ -481,7 +481,7 @@ static enum scan_result collapse_revalidate(struct vm_area_struct *vma,
 	enum scan_result result;
 	unsigned int i, nr_live = 0;
 
-	if (unlikely(collapse_test_exit_or_disable(mm)))
+	if (unlikely(collapse_disabled(mm)))
 		return SCAN_ANY_PROCESS;
 
 	if (!vma->anon_vma || !vma_is_anonymous(vma))
@@ -3811,7 +3811,7 @@ retract:
 	 */
 	if (result == SCAN_PTE_MAPPED_HUGEPAGE) {
 		mmap_read_lock(mm);
-		if (collapse_test_exit_or_disable(mm))
+		if (collapse_disabled(mm))
 			result = SCAN_ANY_PROCESS;
 		else
 			result = try_collapse_pte_mapped_thp(mm, addr,
@@ -3842,6 +3842,8 @@ bool collapse_scan_pmd(struct vm_area_struct *vma, unsigned long addr,
 	struct mm_struct *mm = vma->vm_mm;
 
 	vma_assert_locked(vma);
+	/* The caller holds a reference on it, so it cannot have gone away */
+	VM_WARN_ON_ONCE(collapse_test_exit(mm));
 
 	/*
 	 * What the scan answers with, so cleared before it runs.
@@ -3853,7 +3855,7 @@ bool collapse_scan_pmd(struct vm_area_struct *vma, unsigned long addr,
 	/* Whatever the last scan found has to have been run by now */
 	collapse_put_scan_file(cc);
 
-	if (unlikely(collapse_test_exit_or_disable(mm)))
+	if (unlikely(collapse_disabled(mm)))
 		cc->scan_refusal = SCAN_ANY_PROCESS;
 	else if (addr < vma->vm_start || end > vma->vm_end)
 		cc->scan_refusal = SCAN_ADDRESS_RANGE;
