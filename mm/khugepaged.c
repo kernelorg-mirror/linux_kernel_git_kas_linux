@@ -2851,7 +2851,8 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 
 	vma_iter_init(&vmi, mm, khugepaged_scan.address);
 	for_each_vma(vmi, vma) {
-		unsigned long hstart, hend, orders;
+		unsigned long hstart, hend, window;
+		unsigned long orders;
 
 		cond_resched();
 		if (unlikely(collapse_test_exit_or_disable(mm))) {
@@ -2865,34 +2866,42 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			cc->progress++;
 			continue;
 		}
-		hstart = ALIGN(vma->vm_start, HPAGE_PMD_SIZE);
-		hend = ALIGN_DOWN(vma->vm_end, HPAGE_PMD_SIZE);
+
+		/*
+		 * Coverage is rooted at windows of the largest order the VMA
+		 * allows: below the PMD order that reaches VMAs a whole table
+		 * would not fit in, and parts of a VMA that a whole table would
+		 * leave out.
+		 */
+		window = PAGE_SIZE << __fls(orders);
+		hstart = ALIGN(vma->vm_start, window);
+		hend = ALIGN_DOWN(vma->vm_end, window);
 		if (khugepaged_scan.address > hend) {
 			cc->progress++;
 			continue;
 		}
 		if (khugepaged_scan.address < hstart)
 			khugepaged_scan.address = hstart;
-		VM_BUG_ON(khugepaged_scan.address & ~HPAGE_PMD_MASK);
 
 		while (khugepaged_scan.address < hend) {
-			unsigned long addr;
+			unsigned long addr, pmd_addr, range_end;
+
+			/* One table's worth at most, and never past the VMA */
+			pmd_addr = khugepaged_scan.address & HPAGE_PMD_MASK;
+			range_end = min(hend, pmd_addr + HPAGE_PMD_SIZE);
 
 			cond_resched();
 			if (unlikely(collapse_test_exit_or_disable(mm)))
 				goto breakouterloop;
 
-			VM_WARN_ON_ONCE(khugepaged_scan.address < hstart ||
-				  khugepaged_scan.address + HPAGE_PMD_SIZE >
-				  hend);
+			VM_WARN_ON_ONCE(khugepaged_scan.address < hstart);
 
 			addr = khugepaged_scan.address;
 			/* move to next address */
-			khugepaged_scan.address += HPAGE_PMD_SIZE;
+			khugepaged_scan.address = range_end;
 
-			*result = collapse_scan_pmd(vma, addr,
-						    addr + HPAGE_PMD_SIZE,
-						    cc, orders);
+			*result = collapse_scan_pmd(vma, addr, range_end, cc,
+						    orders);
 			/* Nothing to do here, and the lock is still ours */
 			if (*result != SCAN_SUCCEED &&
 			    *result != SCAN_PTE_MAPPED_HUGEPAGE) {
@@ -2908,9 +2917,8 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			 * whatever the collapse leaves them.
 			 */
 			mmap_read_unlock(mm);
-			*result = collapse_run_pmd(mm, addr,
-						   addr + HPAGE_PMD_SIZE,
-						   *result, cc);
+			*result = collapse_run_pmd(mm, addr, range_end, *result,
+						   cc);
 			if (*result == SCAN_SUCCEED)
 				khugepaged_pages_collapsed++;
 			goto breakouterloop_mmap_lock;
