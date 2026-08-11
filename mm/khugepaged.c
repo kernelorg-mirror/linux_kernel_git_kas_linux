@@ -2721,8 +2721,8 @@ static void collapse_put_scan_file(struct collapse_control *cc)
 }
 
 enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
-		unsigned long addr, struct collapse_control *cc,
-		unsigned long orders)
+		unsigned long addr, unsigned long end,
+		struct collapse_control *cc, unsigned long orders)
 {
 	enum scan_result result;
 	pgoff_t pgoff;
@@ -2734,8 +2734,8 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
 	if (vma_is_anonymous(vma)) {
 		enum scan_result result;
 
-		result = collapse_scan_anon_pmd(vma, addr,
-						addr + HPAGE_PMD_SIZE, cc);
+		result = collapse_scan_anon_pmd(vma, addr, end, cc);
+
 		/*
 		 * The engine reports what it turned down even when it selected
 		 * something, so what it selected is what says there is work.
@@ -2762,14 +2762,15 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
 }
 
 enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
-		enum scan_result result, struct collapse_control *cc)
+		unsigned long end, enum scan_result result,
+		struct collapse_control *cc)
 {
 	struct file *file = cc->scan_file;
 	bool triggered_wb = false;
 	pgoff_t pgoff;
 
 	if (!file)
-		return collapse_anon_pmd(mm, addr, addr + HPAGE_PMD_SIZE, cc);
+		return collapse_anon_pmd(mm, addr, end, cc);
 
 	cc->scan_file = NULL;
 	pgoff = cc->scan_pgoff;
@@ -2889,7 +2890,9 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			/* move to next address */
 			khugepaged_scan.address += HPAGE_PMD_SIZE;
 
-			*result = collapse_scan_pmd(vma, addr, cc, orders);
+			*result = collapse_scan_pmd(vma, addr,
+						    addr + HPAGE_PMD_SIZE,
+						    cc, orders);
 			/* Nothing to do here, and the lock is still ours */
 			if (*result != SCAN_SUCCEED &&
 			    *result != SCAN_PTE_MAPPED_HUGEPAGE) {
@@ -2905,7 +2908,9 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			 * whatever the collapse leaves them.
 			 */
 			mmap_read_unlock(mm);
-			*result = collapse_run_pmd(mm, addr, *result, cc);
+			*result = collapse_run_pmd(mm, addr,
+						   addr + HPAGE_PMD_SIZE,
+						   *result, cc);
 			if (*result == SCAN_SUCCEED)
 				khugepaged_pages_collapsed++;
 			goto breakouterloop_mmap_lock;

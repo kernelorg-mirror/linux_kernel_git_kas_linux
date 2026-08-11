@@ -196,7 +196,7 @@ unsigned long collapse_possible_orders(struct vm_area_struct *vma,
  *
  *     collapse_control_init(cc)              once, before the first table
  *     collapse_scan_pmd(vma, addr, ...)      per table
- *     collapse_run_pmd(mm, addr, result, cc) when a scan found work
+ *     collapse_run_pmd(mm, addr, end, result, cc) when a scan found work
  *     collapse_control_release(cc)           once, when done with the control
  *
  * The caller holds mmap_lock for reading over the scan and passes an address
@@ -224,10 +224,11 @@ unsigned long collapse_possible_orders(struct vm_area_struct *vma,
 int collapse_control_init(struct collapse_control *cc);
 void collapse_control_release(struct collapse_control *cc);
 enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
-		unsigned long addr, struct collapse_control *cc,
-		unsigned long orders);
+		unsigned long addr, unsigned long end,
+		struct collapse_control *cc, unsigned long orders);
 enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
-		enum scan_result result, struct collapse_control *cc);
+		unsigned long end, enum scan_result result,
+		struct collapse_control *cc);
 enum scan_result collapse_vma_revalidate(struct mm_struct *mm,
 		unsigned long address, bool expect_anon,
 		struct vm_area_struct **vmap, struct collapse_control *cc,
