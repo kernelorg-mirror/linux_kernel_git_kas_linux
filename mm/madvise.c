@@ -956,8 +956,9 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 	struct madvise_behavior_range *range = &madv_behavior->range;
 	struct vm_area_struct *vma = madv_behavior->vma;
 	struct mm_struct *mm = madv_behavior->mm;
+	unsigned long hstart, hend, addr;
 	struct collapse_control *cc;
-	unsigned long hstart, hend, addr, orders;
+	unsigned long orders;
 	enum scan_result last_fail = SCAN_FAIL;
 	int thps = 0;
 	int err;
@@ -965,9 +966,7 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 	BUG_ON(vma->vm_start > range->start);
 	BUG_ON(vma->vm_end < range->end);
 
-	orders = collapse_possible_orders(vma, vma->vm_flags,
-					  TVA_FORCED_COLLAPSE);
-	if (!orders)
+	if (!collapse_possible_orders(vma, vma->vm_flags, TVA_FORCED_COLLAPSE))
 		return -EINVAL;
 
 	hstart = ALIGN(range->start, HPAGE_PMD_SIZE);
@@ -987,29 +986,39 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 		return err;
 	}
 
+	/*
+	 * Nothing below wants the lock the VMA walk left held, and
+	 * lru_add_drain_all() waits on every CPU, so give it up first.  The
+	 * walk carries on under mmap_lock and its own caller is what drops it,
+	 * so reporting this only tells the walk that its VMA is now stale.
+	 */
+	mmap_read_unlock(mm);
+	mark_mmap_lock_dropped(madv_behavior);
+	vma = NULL;
+	orders = 0;
 	lru_add_drain_all();
 
 	for (addr = hstart; addr < hend; addr += HPAGE_PMD_SIZE) {
-		struct vm_area_struct *found;
 		enum scan_result result;
 
 		/*
-		 * A collapse gives the lock up, so the VMA has to be found
+		 * A collapse gives the lock up, and the VMA has to be found
 		 * again after one: it can shrink while nothing is held.  A scan
 		 * that finds nothing to collapse leaves the lock alone, so a
-		 * range that is already collapsed walks on without relocking.
+		 * range that is already collapsed walks it without relocking.
+		 *
+		 * Reschedule only here, where nothing is held: a preemption
+		 * point under a lock is a writer waiting longer.
 		 */
 		if (!vma) {
 			cond_resched();
 			mmap_read_lock(mm);
-			result = collapse_vma_revalidate(mm, addr, false, &found,
-							 cc, HPAGE_PMD_ORDER);
-			if (result != SCAN_SUCCEED) {
-				last_fail = result;
-				goto out_locked;
+			vma = vma_lookup(mm, addr);
+			if (!vma) {
+				mmap_read_unlock(mm);
+				hend = addr;
+				break;
 			}
-			vma = found;
-			hend = min(hend, vma->vm_end & HPAGE_PMD_MASK);
 			orders = collapse_possible_orders(vma, vma->vm_flags,
 							  cc->policy.tva_type);
 		}
@@ -1019,13 +1028,23 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 				       orders)) {
 			result = cc->scan_refusal;
 		} else {
-			/* The collapse takes its own locks, so give this up */
+			/* collapse_run_pmd() takes its own locks, so give this up */
 			mmap_read_unlock(mm);
-			mark_mmap_lock_dropped(madv_behavior);
 			vma = NULL;
+			/* The mask belonged to that lock, not to this range */
+			orders = 0;
 
 			result = collapse_run_pmd(mm, addr,
 						  addr + HPAGE_PMD_SIZE, cc);
+		}
+
+		/*
+		 * The VMA shrank under us, so the rest of the range was never
+		 * ours to collapse: stop, and expect only what came before.
+		 */
+		if (result == SCAN_VMA_NULL || result == SCAN_ADDRESS_RANGE) {
+			hend = addr;
+			break;
 		}
 
 		switch (result) {
@@ -1054,11 +1073,9 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 	}
 
 out:
-	/* Caller expects us to hold mmap_lock on return */
+	/* The VMA walk this returns to expects the lock it was holding */
 	if (!vma)
 		mmap_read_lock(mm);
-out_locked:
-	mmap_assert_locked(mm);
 	collapse_control_release(cc);
 	kfree(cc);
 
@@ -1066,14 +1083,12 @@ out_locked:
 			: madvise_collapse_errno(last_fail);
 }
 
-#else	/* CONFIG_TRANSPARENT_HUGEPAGE */
-
+#else
 static int madvise_collapse(struct madvise_behavior *madv_behavior)
 {
 	return -EINVAL;
 }
-
-#endif	/* CONFIG_TRANSPARENT_HUGEPAGE */
+#endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
 static long madvise_dontneed_free(struct madvise_behavior *madv_behavior)
 {

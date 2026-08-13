@@ -472,49 +472,6 @@ static void collapse_policy_khugepaged(struct collapse_policy *p)
 	p->tva_type = TVA_KHUGEPAGED;
 }
 
-/*
- * If mmap_lock temporarily dropped, revalidate vma
- * after taking the mmap_lock again.
- * Returns enum scan_result value.
- */
-
-enum scan_result collapse_vma_revalidate(struct mm_struct *mm, unsigned long address,
-		bool expect_anon, struct vm_area_struct **vmap,
-		struct collapse_control *cc, unsigned int order)
-{
-	struct vm_area_struct *vma;
-	enum tva_type type = cc->policy.tva_type;
-
-	if (unlikely(collapse_test_exit_or_disable(mm)))
-		return SCAN_ANY_PROCESS;
-
-	*vmap = vma = find_vma(mm, address);
-	if (!vma)
-		return SCAN_VMA_NULL;
-
-	/*
-	 * We cannot collapse VMA regions that do not span the full PMD. This is
-	 * due to the potential of the PMD being shared by another VMA leaving
-	 * us vulnerable to a race condition. Always check the PMD order here to
-	 * ensure its not shared by another VMA. We'd need to lock all VMAs in
-	 * the PMD range to support this.
-	 */
-	if (!thp_vma_suitable_order(vma, address, PMD_ORDER))
-		return SCAN_ADDRESS_RANGE;
-	if (!thp_vma_allowable_orders(vma, vma->vm_flags, type, BIT(order)))
-		return SCAN_VMA_CHECK;
-	/*
-	 * Anon VMA expected, the address may be unmapped then
-	 * remapped to file after khugepaged reacquired the mmap_lock.
-	 *
-	 * thp_vma_allowable_orders() may return true for qualified file
-	 * vmas.
-	 */
-	if (expect_anon && (!(*vmap)->anon_vma || !vma_is_anonymous(*vmap)))
-		return SCAN_PAGE_ANON;
-	return SCAN_SUCCEED;
-}
-
 static void collect_mm_slot(struct mm_slot *slot)
 {
 	struct mm_struct *mm = slot->mm;
