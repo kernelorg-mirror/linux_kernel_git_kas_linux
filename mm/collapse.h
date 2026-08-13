@@ -221,9 +221,4 @@ enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
 unsigned long collapse_possible_orders(struct vm_area_struct *vma,
 		vm_flags_t vm_flags, enum tva_type tva_flags);
 
-enum scan_result collapse_vma_revalidate(struct mm_struct *mm,
-		unsigned long address, bool expect_anon,
-		struct vm_area_struct **vmap, struct collapse_control *cc,
-		unsigned int order);
-
 #endif	/* __MM_COLLAPSE_H */
