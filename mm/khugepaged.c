@@ -540,10 +540,20 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			cc->progress++;
 			break;
 		}
+
+		/*
+		 * Before the VMA is judged, so that a pass over an address space
+		 * of VMAs it skips is bounded by the budget too: each one is
+		 * charged for, and none of them was being asked to be scanned.
+		 */
+		if (cc->progress >= progress_max)
+			break;
+
 		/* One mask for the whole VMA */
 		orders = collapse_possible_orders(vma, vma->vm_flags,
 						  cc->policy.tva_type);
 		if (!orders) {
+			khugepaged_scan.address = vma->vm_end;
 			cc->progress++;
 			continue;
 		}
@@ -558,6 +568,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 		hstart = ALIGN(vma->vm_start, window);
 		hend = ALIGN_DOWN(vma->vm_end, window);
 		if (khugepaged_scan.address > hend) {
+			khugepaged_scan.address = vma->vm_end;
 			cc->progress++;
 			continue;
 		}
@@ -572,7 +583,8 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			range_end = min(hend, pmd_addr + HPAGE_PMD_SIZE);
 
 			cond_resched();
-			if (unlikely(collapse_test_exit_or_disable(mm)))
+			if (unlikely(collapse_test_exit_or_disable(mm)) ||
+			    cc->progress >= progress_max)
 				goto breakouterloop;
 
 			VM_WARN_ON_ONCE(khugepaged_scan.address < hstart);
@@ -584,8 +596,6 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			/* If nothing to collapse, the lock is still ours */
 			if (!collapse_scan_pmd(vma, start, range_end, cc, orders)) {
 				*result = cc->scan_refusal;
-				if (cc->progress >= progress_max)
-					goto breakouterloop;
 				continue;
 			}
 
