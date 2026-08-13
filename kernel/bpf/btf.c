@@ -6677,6 +6677,9 @@ static const struct bpf_raw_tp_null_args raw_tp_null_args[] = {
 	{ "cachefiles_mark_inactive", 0x1 },
 	{ "cachefiles_vfs_error", 0x1 },
 	{ "cachefiles_io_error", 0x1 },
+	/* collapse */
+	{ "mm_collapse_scan_file", 0x10 },
+	{ "mm_collapse_file", 0x10 },
 	/* ext4, from ext4__mballoc event class */
 	{ "ext4_mballoc_discard", 0x10 },
 	{ "ext4_mballoc_free", 0x10 },
@@ -6696,9 +6699,6 @@ static const struct bpf_raw_tp_null_args raw_tp_null_args[] = {
 	{ "time_out_leases", 0x10 },
 	/* host1x */
 	{ "host1x_cdma_push_gather", 0x10000 },
-	/* huge_memory */
-	{ "mm_collapse_scan_file", 0x10 },
-	{ "mm_collapse_file", 0x10 },
 	/* kmem */
 	{ "mm_page_alloc", 0x1 },
 	{ "mm_page_pcpu_drain", 0x1 },

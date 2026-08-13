@@ -104,7 +104,7 @@ static void one_step(int iteration)
 	if (tracing_clear_trace())
 		ksft_exit_fail_msg("Cannot clear the trace buffer\n");
 	if (tracing_events_enable(trace_events_fd, true))
-		ksft_exit_fail_msg("Cannot enable huge_memory events\n");
+		ksft_exit_fail_msg("Cannot enable collapse events\n");
 
 	if (madvise(p, hpage_pmd_size, MADV_HUGEPAGE))
 		ksft_exit_fail_perror("madvise(MADV_HUGEPAGE)");
@@ -112,7 +112,7 @@ static void one_step(int iteration)
 
 	/* Off before anything that can give up: the events are system-wide */
 	if (tracing_events_enable(trace_events_fd, false))
-		ksft_exit_fail_msg("Cannot disable huge_memory events\n");
+		ksft_exit_fail_msg("Cannot disable collapse events\n");
 	if (!passed)
 		ksft_exit_fail_msg("khugepaged did not complete a full pass\n");
 
@@ -149,9 +149,9 @@ int main(void)
 	kpageflags_fd = open("/proc/kpageflags", O_RDONLY);
 	if (kpageflags_fd < 0)
 		ksft_exit_skip("open(/proc/kpageflags) requires root\n");
-	trace_events_fd = tracing_events_open("huge_memory");
+	trace_events_fd = tracing_events_open("collapse");
 	if (trace_events_fd < 0)
-		ksft_exit_skip("huge_memory events require tracefs and root\n");
+		ksft_exit_skip("collapse events require tracefs and root\n");
 	atexit(trace_events_off);
 
 	ksft_set_plan(NR_ITERATIONS);
