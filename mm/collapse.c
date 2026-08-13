@@ -4,7 +4,6 @@
 #include <linux/backing-dev.h>
 #include <linux/bitops.h>
 #include <linux/dax.h>
-#include <linux/file.h>
 #include <linux/highmem.h>
 #include <linux/huge_mm.h>
 #include <linux/hugetlb.h>	/* x86 flush_tlb_range() uses hstate_vma() */
@@ -424,9 +423,12 @@ void collapse_control_release(struct collapse_control *cc)
 
 int collapse_control_init(struct collapse_control *cc)
 {
-	cc->scan_file = NULL;
 	cc->nr_candidates = 0;
 	cc->nr_retries = 0;
+	cc->select_orders = 0;
+	cc->scan_refusal = SCAN_FAIL;
+	cc->scan_file = NULL;
+	cc->scan_pgoff = 0;
 	cc->candidates = kmalloc_objs(*cc->candidates, COLLAPSE_MAX_CANDIDATES);
 	cc->saved_ptes = kmalloc_objs(*cc->saved_ptes, COLLAPSE_SAVED_PTES);
 	cc->retries = kmalloc_objs(*cc->retries, COLLAPSE_RETRY_STORE_SIZE);
@@ -2172,7 +2174,8 @@ static void collapse_anon_scan_init(struct collapse_control *cc)
  */
 static enum scan_result collapse_scan_anon_pmd(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end,
-					struct collapse_control *cc)
+					struct collapse_control *cc,
+					unsigned long vma_orders)
 {
 	const unsigned long pmd_addr = start & HPAGE_PMD_MASK;
 	struct mm_struct *mm = vma->vm_mm;
@@ -2191,12 +2194,7 @@ static enum scan_result collapse_scan_anon_pmd(struct vm_area_struct *vma,
 	/* Cleared only once a table has turned out to be there */
 	collapse_anon_scan_init(cc);
 
-	cc->select_orders = collapse_possible_orders(vma, vma->vm_flags,
-						     cc->policy.tva_type);
-	if (!cc->select_orders) {
-		cc->scan_refusal = SCAN_VMA_CHECK;
-		return cc->scan_refusal;
-	}
+	cc->select_orders = vma_orders;
 
 	/* The scan narrows select_orders to whatever is left worth trying */
 	cc->scan_refusal = collapse_scan_table(vma, pmd, start, end, cc);
@@ -2652,7 +2650,7 @@ static void count_collapse_event(unsigned int order, enum vm_event_item vm_event
 	count_mthp_stat(order, mthp_event);
 }
 
-static void collapse_control_init_scan(struct collapse_control *cc)
+static void collapse_file_scan_init(struct collapse_control *cc)
 {
 	memset(cc->node_load, 0, sizeof(cc->node_load));
 	nodes_clear(cc->alloc_nmask);
@@ -3569,7 +3567,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
 
 	present = 0;
 	swap = 0;
-	collapse_control_init_scan(cc);
+	collapse_file_scan_init(cc);
 	rcu_read_lock();
 	xas_for_each(&xas, folio, start + HPAGE_PMD_NR - 1) {
 		if (xas_retry(&xas, folio))
@@ -3661,27 +3659,41 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
 	return result;
 }
 
-enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
-		unsigned long addr, unsigned long end,
-		struct collapse_control *cc, unsigned long orders)
+/*
+ * Judge one table's worth of a file VMA.  All it needs of the VMA is the file and
+ * the offset, which it takes while it still has both; the collapse works on the
+ * page cache and never sees a VMA.
+ */
+static enum scan_result collapse_scan_file_pmd(struct vm_area_struct *vma,
+		unsigned long addr, struct collapse_control *cc)
 {
 	enum scan_result result;
 	pgoff_t pgoff;
+	pmd_t *pmd;
 
-	mmap_assert_locked(vma->vm_mm);
-	/* Whatever the last scan found has to have been run by now */
-	collapse_put_scan_file(cc);
+	/*
+	 * A file collapse only ever builds a PMD, so the whole table has to be
+	 * the VMA's -- a PMD shared with another VMA would need all of them
+	 * locked.  Not the question collapse_possible_orders() answered, which is
+	 * whether the VMA may use the order at all: this is whether the table at
+	 * @addr is wholly inside it.  While a file VMA collapses at PMD order
+	 * alone its callers hand over whole tables and this cannot fire, but the
+	 * anonymous side already hands over parts of one.
+	 */
+	if (!thp_vma_suitable_order(vma, addr, HPAGE_PMD_ORDER))
+		return SCAN_ADDRESS_RANGE;
 
-	if (vma_is_anonymous(vma)) {
-		enum scan_result result;
-
-		result = collapse_scan_anon_pmd(vma, addr, end, cc);
-		/*
-		 * The engine reports what it turned down even when it selected
-		 * something, so what it selected is what says there is work.
-		 */
-		return cc->select_orders ? SCAN_SUCCEED : result;
-	}
+	/*
+	 * A PMD that is huge already has nothing left to collapse, and skipping
+	 * it here is what keeps mmap_lock out of a collapse that would find
+	 * nothing.  Everything else is worth the page cache scan, pmd_none()
+	 * included: a file range can be collapsed out of the cache without being
+	 * mapped first, which is why this is not the test the anonymous side
+	 * makes.
+	 */
+	result = find_pmd_or_thp_or_none(vma->vm_mm, addr & HPAGE_PMD_MASK, &pmd);
+	if (result == SCAN_PMD_MAPPED)
+		return result;
 
 	pgoff = linear_page_index(vma, addr);
 	result = collapse_scan_file(vma->vm_mm, addr, vma->vm_file, pgoff, cc);
@@ -3698,33 +3710,35 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
 	 */
 	cc->scan_file = get_file(vma->vm_file);
 	cc->scan_pgoff = pgoff;
+
 	return result;
 }
 
-enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
-		unsigned long end, enum scan_result result,
-		struct collapse_control *cc)
+/*
+ * Build a PMD over what the page cache holds, and map it over the range if a huge
+ * folio is already there but mapped by PTEs.  Runs with no mmap_lock, which the
+ * caller gave up, and takes it again only for that last step.
+ */
+static enum scan_result collapse_file_pmd(struct mm_struct *mm,
+		unsigned long addr, struct collapse_control *cc)
 {
 	struct file *file = cc->scan_file;
 	bool triggered_wb = false;
-	pgoff_t pgoff;
-
-	if (!file)
-		return collapse_anon_pmd(mm, addr, end, cc);
+	enum scan_result result;
 
 	cc->scan_file = NULL;
-	pgoff = cc->scan_pgoff;
 
 	/* The scan found the PMD folio in place: nothing to collapse */
+	result = cc->scan_refusal;
 	if (result == SCAN_PTE_MAPPED_HUGEPAGE)
 		goto retract;
 retry:
-	result = collapse_file(mm, addr, file, pgoff, cc);
+	result = collapse_file(mm, addr, file, cc->scan_pgoff, cc);
 
 	/* Dirty pages are worth a writeback and one more try, if asked for */
 	if (cc->policy.writeback_dirty && result == SCAN_PAGE_DIRTY_OR_WRITEBACK &&
 	    !triggered_wb && mapping_can_writeback(file->f_mapping)) {
-		const loff_t lstart = (loff_t)pgoff << PAGE_SHIFT;
+		const loff_t lstart = (loff_t)cc->scan_pgoff << PAGE_SHIFT;
 		const loff_t lend = lstart + HPAGE_PMD_SIZE - 1;
 
 		filemap_write_and_wait_range(file->f_mapping, lstart, lend);
@@ -3749,5 +3763,64 @@ retract:
 			result = SCAN_SUCCEED;
 		mmap_read_unlock(mm);
 	}
+
 	return result;
+}
+
+/*
+ * Scan one table's worth of @vma and decide whether there is anything to collapse
+ * in it.  The caller holds mmap_lock for reading and still holds it when this
+ * returns: what is looked at is either the VMA or a page table that the lock
+ * keeps in place.
+ *
+ * Returns whether collapse_run_pmd() has anything to do, and a scan that found
+ * something has to be run: the file side takes a reference on the file while it
+ * still has the VMA to take it from, and the run is what gives it back.  What the
+ * scan turned down is left in cc->scan_refusal either way.
+ */
+bool collapse_scan_pmd(struct vm_area_struct *vma, unsigned long addr,
+		unsigned long end, struct collapse_control *cc,
+		unsigned long vma_orders)
+{
+	struct mm_struct *mm = vma->vm_mm;
+
+	mmap_assert_locked(mm);
+
+	/*
+	 * What the scan answers with, so cleared before it runs.
+	 * collapse_anon_scan_init() clears the orders too, but only once the
+	 * table has turned out to be there.
+	 */
+	cc->select_orders = 0;
+
+	/* Whatever the last scan found has to have been run by now */
+	collapse_put_scan_file(cc);
+
+	if (unlikely(collapse_test_exit_or_disable(mm)))
+		cc->scan_refusal = SCAN_ANY_PROCESS;
+	else if (addr < vma->vm_start || end > vma->vm_end)
+		cc->scan_refusal = SCAN_ADDRESS_RANGE;
+	else if (!vma_orders)
+		cc->scan_refusal = SCAN_VMA_CHECK;
+	else if (vma_is_anonymous(vma))
+		collapse_scan_anon_pmd(vma, addr, end, cc, vma_orders);
+	else
+		cc->scan_refusal = collapse_scan_file_pmd(vma, addr, cc);
+
+	return cc->select_orders || cc->scan_file;
+}
+
+/*
+ * Collapse what the scan selected.  Called with no mmap_lock: the caller gives it
+ * up first, because a collapse takes it again for each round and revalidates
+ * under it, and holding it across the whole collapse would keep a writer to the
+ * address space waiting for it.
+ */
+enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
+		unsigned long end, struct collapse_control *cc)
+{
+	if (cc->scan_file)
+		return collapse_file_pmd(mm, addr, cc);
+	else
+		return collapse_anon_pmd(mm, addr, end, cc);
 }

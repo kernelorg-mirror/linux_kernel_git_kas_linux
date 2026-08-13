@@ -1014,20 +1014,20 @@ static int madvise_collapse(struct madvise_behavior *madv_behavior)
 							  cc->policy.tva_type);
 		}
 
-		result = collapse_scan_pmd(vma, addr, addr + HPAGE_PMD_SIZE,
-					   cc, orders);
-		/* Nothing to do here, and the lock is still ours */
-		if (result != SCAN_SUCCEED && result != SCAN_PTE_MAPPED_HUGEPAGE)
-			goto tally;
+		/* If nothing to collapse, the lock is still ours */
+		if (!collapse_scan_pmd(vma, addr, addr + HPAGE_PMD_SIZE, cc,
+				       orders)) {
+			result = cc->scan_refusal;
+		} else {
+			/* The collapse takes its own locks, so give this up */
+			mmap_read_unlock(mm);
+			mark_mmap_lock_dropped(madv_behavior);
+			vma = NULL;
 
-		/* The collapse takes its own locks, so give this up */
-		mmap_read_unlock(mm);
-		mark_mmap_lock_dropped(madv_behavior);
-		vma = NULL;
+			result = collapse_run_pmd(mm, addr,
+						  addr + HPAGE_PMD_SIZE, cc);
+		}
 
-		result = collapse_run_pmd(mm, addr, addr + HPAGE_PMD_SIZE,
-					  result, cc);
-tally:
 		switch (result) {
 		case SCAN_SUCCEED:
 		case SCAN_PMD_MAPPED:
