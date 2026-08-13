@@ -610,7 +610,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 			khugepaged_scan.address = hstart;
 
 		while (khugepaged_scan.address < hend) {
-			unsigned long addr, pmd_addr, range_end;
+			unsigned long pmd_addr, range_end, start;
 
 			/* One table's worth at most, and never past the VMA */
 			pmd_addr = khugepaged_scan.address & HPAGE_PMD_MASK;
@@ -622,29 +622,21 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
 
 			VM_WARN_ON_ONCE(khugepaged_scan.address < hstart);
 
-			addr = khugepaged_scan.address;
+			start = khugepaged_scan.address;
 			/* move to next address */
 			khugepaged_scan.address = range_end;
 
-			*result = collapse_scan_pmd(vma, addr, range_end, cc,
-						    orders);
-			/* Nothing to do here, and the lock is still ours */
-			if (*result != SCAN_SUCCEED &&
-			    *result != SCAN_PTE_MAPPED_HUGEPAGE) {
+			/* If nothing to collapse, the lock is still ours */
+			if (!collapse_scan_pmd(vma, start, range_end, cc, orders)) {
+				*result = cc->scan_refusal;
 				if (cc->progress >= progress_max)
 					goto breakouterloop;
 				continue;
 			}
 
-			/*
-			 * A collapse takes its own locks and is slow enough
-			 * that a writer should not wait behind it, so give the
-			 * lock up.  That ends this walk: vma and the mm are
-			 * whatever the collapse leaves them.
-			 */
+			/* collapse_run_pmd() takes its own locks, so give this up */
 			mmap_read_unlock(mm);
-			*result = collapse_run_pmd(mm, addr, range_end, *result,
-						   cc);
+			*result = collapse_run_pmd(mm, start, range_end, cc);
 			if (*result == SCAN_SUCCEED)
 				khugepaged_pages_collapsed++;
 			goto breakouterloop_mmap_lock;
