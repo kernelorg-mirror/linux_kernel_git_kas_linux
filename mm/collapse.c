@@ -54,8 +54,8 @@ enum collapse_pass {
  * The folios mapped across a window of PTEs become one folio of that window's
  * order, with the sources quiesced by the two barriers migration uses --
  * migration entries in their PTEs, then a frozen refcount -- so the copy itself
- * needs no lock.  A collapse takes a read lock on the VMA for each round; a
- * scan still runs under the mmap_lock its caller holds.
+ * needs no lock.  A scan runs under a read lock on the VMA it was handed; a
+ * collapse is given none and takes its own, for one round at a time.
  *
  * A round carries a batch of candidate windows through the passes together,
  * rather than carrying one window through the whole collapse.  [ptl] and
@@ -1994,9 +1994,10 @@ static enum scan_result collapse_scan_table(struct vm_area_struct *vma,
 	 * wait for a scan of the whole table.
 	 *
 	 * pte_offset_map() holds rcu_read_lock() until pte_unmap(), which is
-	 * what keeps the table itself from being freed underneath the walk;
-	 * mmap_lock keeps the VMA attached, without which free_pgtables() could
-	 * free it without waiting for RCU at all.  Nothing below here sleeps.
+	 * what keeps the table itself from being freed underneath the walk; the
+	 * VMA read lock keeps the VMA attached, without which free_pgtables()
+	 * could free it without waiting for RCU at all.  Nothing below here
+	 * sleeps.
 	 *
 	 * The entries are read with ptep_get_lockless().  On arm64, ptep_get()
 	 * of one entry in a contiguous range gathers the young and dirty bits
@@ -2224,9 +2225,9 @@ static void collapse_anon_scan_init(struct collapse_control *cc)
 /*
  * Judge one table's worth of @vma, leaving in @cc what a collapse could use:
  * which orders are still worth attempting, and why the table was turned down if
- * some order was.  Holds mmap_lock throughout -- it only reads -- and a caller
- * that acts on what it found hands the range to collapse_anon_pmd() afterwards,
- * without the lock.
+ * some order was.  Holds the read lock it was called under throughout -- it only
+ * reads -- and a caller that acts on what it found hands the range to
+ * collapse_anon_pmd() afterwards, without any lock.
  */
 static enum scan_result collapse_scan_anon_pmd(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end,
@@ -3825,9 +3826,9 @@ retract:
 
 /*
  * Scan one table's worth of @vma and decide whether there is anything to collapse
- * in it.  The caller holds mmap_lock for reading and still holds it when this
- * returns: what is looked at is either the VMA or a page table that the lock
- * keeps in place.
+ * in it.  The caller holds a read lock and still holds it when this returns:
+ * what is looked at is either the VMA or a page table that the lock keeps in
+ * place.
  *
  * Returns whether collapse_run_pmd() has anything to do, and a scan that found
  * something has to be run: the file side takes a reference on the file while it
@@ -3839,8 +3840,6 @@ bool collapse_scan_pmd(struct vm_area_struct *vma, unsigned long addr,
 		unsigned long vma_orders)
 {
 	struct mm_struct *mm = vma->vm_mm;
-
-	mmap_assert_locked(mm);
 
 	/*
 	 * What the scan answers with, so cleared before it runs.
