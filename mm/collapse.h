@@ -234,14 +234,4 @@ enum scan_result collapse_vma_revalidate(struct mm_struct *mm,
 		struct vm_area_struct **vmap, struct collapse_control *cc,
 		unsigned int order);
 
-enum scan_result check_pmd_state(pmd_t *pmd);
-enum scan_result find_pmd_or_thp_or_none(struct mm_struct *mm,
-		unsigned long address, pmd_t **pmd);
-int collapse_find_target_node(struct collapse_control *cc);
-bool collapse_scan_abort(int nid, struct collapse_control *cc);
-unsigned int collapse_max_ptes_none(struct collapse_control *cc,
-		struct vm_area_struct *vma, unsigned int order);
-unsigned int collapse_max_ptes_swap(struct collapse_control *cc,
-		unsigned int order);
-
 #endif	/* __MM_COLLAPSE_H */
