@@ -111,6 +111,7 @@ struct usemem_thread {
 	int		error[NR_OPS];
 	int		last_error;
 	u64		sink;
+	bool		finished;
 
 	/* Which chunks of the region are mapped, and how many are not */
 	bool		*mapped;
@@ -124,6 +125,7 @@ static bool		access_seq;
 static unsigned int	holes_pct	= 25;
 static unsigned int	nr_threads	= 1;
 static unsigned int	nr_secs		= 5;
+static unsigned int	interval_ms;
 static unsigned long	nr_loops;
 static unsigned int	seed		= 1;
 static int		thp;
@@ -146,6 +148,8 @@ static const struct option options[] = {
 		     "Number of threads to run (default: 1)"),
 	OPT_UINTEGER('r', "runtime", &nr_secs,
 		     "Seconds to run for, 0 for no limit (default: 5)"),
+	OPT_UINTEGER('i', "interval", &interval_ms,
+		     "Report progress every so many milliseconds"),
 	OPT_ULONG('l', "loops", &nr_loops,
 		  "Operations to run per thread, 0 for no limit (default: 0)"),
 	OPT_BOOLEAN(0, "sequential", &access_seq,
@@ -553,7 +557,75 @@ static void *worker_thread(void *arg)
 			break;
 	}
 
+	t->finished = true;
+
 	return NULL;
+}
+
+/* Counted without holding anything: a progress line may lag a thread or two */
+static u64 ops_so_far(struct usemem_thread *threads)
+{
+	u64 nr_ops = 0;
+	unsigned int i, op;
+
+	for (i = 0; i < nr_threads; i++)
+		for (op = 0; op < NR_OPS; op++)
+			nr_ops += threads[i].hist[op].nr;
+
+	return nr_ops;
+}
+
+static bool all_finished(struct usemem_thread *threads)
+{
+	unsigned int i;
+
+	for (i = 0; i < nr_threads; i++)
+		if (!threads[i].finished)
+			return false;
+
+	return true;
+}
+
+static void sleep_until(u64 when)
+{
+	u64 now = now_ns();
+	struct timespec ts;
+
+	if (now >= when)
+		return;
+
+	ts.tv_sec = (when - now) / NSEC_PER_SEC;
+	ts.tv_nsec = (when - now) % NSEC_PER_SEC;
+	nanosleep(&ts, NULL);
+}
+
+static void run_intervals(struct usemem_thread *threads, u64 start_ns)
+{
+	u64 deadline = start_ns + (u64)nr_secs * NSEC_PER_SEC;
+	u64 tick = (u64)interval_ms * NSEC_PER_MSEC;
+	u64 last_ops = 0, next = start_ns;
+
+	printf("#\n# %10s %12s\n", "secs", "ops/sec");
+
+	while (!done && !all_finished(threads)) {
+		u64 now, nr_ops;
+
+		next += tick;
+		sleep_until(next);
+
+		now = now_ns();
+		nr_ops = ops_so_far(threads);
+
+		printf("  %10.3f %12.0f\n",
+		       (double)(now - start_ns) / NSEC_PER_SEC,
+		       (nr_ops - last_ops) * (double)NSEC_PER_SEC / tick);
+		fflush(stdout);
+
+		last_ops = nr_ops;
+
+		if (nr_secs && now >= deadline)
+			done = true;
+	}
 }
 
 /*
@@ -894,7 +966,9 @@ int bench_mem_usemem(int argc, const char **argv)
 	cond_broadcast(&start_worker);
 	mutex_unlock(&start_lock);
 
-	if (nr_secs) {
+	if (interval_ms && bench_format == BENCH_FORMAT_DEFAULT) {
+		run_intervals(threads, start_ns);
+	} else if (nr_secs) {
 		sleep(nr_secs);
 		done = true;
 	}
