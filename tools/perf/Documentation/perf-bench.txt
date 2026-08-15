@@ -326,8 +326,8 @@ Specify how many operations to run per thread, 0 for no limit
 
 -i::
 --interval::
-Report the operation rate every so many milliseconds (default: 0, or only
-at the end).
+Report the operation rate and how much of the address space huge pages
+cover every so many milliseconds (default: 0, or only at the end).
 
 --sequential::
 Walk each region in order rather than picking pages at random.

@@ -562,6 +562,40 @@ static void *worker_thread(void *arg)
 	return NULL;
 }
 
+/*
+ * How much of the address space huge pages cover, which is what says whether a
+ * collapse is keeping up with the workload.  This counts what is mapped at the
+ * PMD level only; smaller folios do not appear here.
+ */
+static unsigned long anon_huge_kb(void)
+{
+	unsigned long kb = 0;
+	char line[256];
+	FILE *f;
+
+	/*
+	 * /proc/meminfo, not /proc/self/smaps_rollup: a rollup walks every page
+	 * table entry in the address space under mmap_lock, so reading it once
+	 * per interval turns the reporting loop into a page-table walker that
+	 * competes with whatever is being measured.  On a 32GB region that cost
+	 * more than the interval itself and slowed a collapse by 13x, which is
+	 * the sort of number that looks like a kernel result.  These counters
+	 * are global rather than per-process, which is the right trade for a
+	 * benchmark that owns the machine it runs on.
+	 */
+	f = fopen("/proc/meminfo", "r");
+	if (!f)
+		return 0;
+
+	while (fgets(line, sizeof(line), f))
+		if (sscanf(line, "AnonHugePages: %lu kB", &kb) == 1)
+			break;
+
+	fclose(f);
+
+	return kb;
+}
+
 /* Counted without holding anything: a progress line may lag a thread or two */
 static u64 ops_so_far(struct usemem_thread *threads)
 {
@@ -605,7 +639,7 @@ static void run_intervals(struct usemem_thread *threads, u64 start_ns)
 	u64 tick = (u64)interval_ms * NSEC_PER_MSEC;
 	u64 last_ops = 0, next = start_ns;
 
-	printf("#\n# %10s %12s\n", "secs", "ops/sec");
+	printf("#\n# %10s %12s %14s\n", "secs", "ops/sec", "huge (kB)");
 
 	while (!done && !all_finished(threads)) {
 		u64 now, nr_ops;
@@ -616,9 +650,10 @@ static void run_intervals(struct usemem_thread *threads, u64 start_ns)
 		now = now_ns();
 		nr_ops = ops_so_far(threads);
 
-		printf("  %10.3f %12.0f\n",
+		printf("  %10.3f %12.0f %14lu\n",
 		       (double)(now - start_ns) / NSEC_PER_SEC,
-		       (nr_ops - last_ops) * (double)NSEC_PER_SEC / tick);
+		       (nr_ops - last_ops) * (double)NSEC_PER_SEC / tick,
+		       anon_huge_kb());
 		fflush(stdout);
 
 		last_ops = nr_ops;
@@ -770,7 +805,8 @@ static void print_header(void)
 	printf("\n");
 }
 
-static void report(struct usemem_thread *threads, u64 runtime_ns)
+static void report(struct usemem_thread *threads, u64 runtime_ns,
+		   unsigned long huge_before)
 {
 	double secs = (double)runtime_ns / NSEC_PER_SEC;
 	u64 nothing[NR_OPS] = { 0 }, failed[NR_OPS] = { 0 };
@@ -843,6 +879,8 @@ static void report(struct usemem_thread *threads, u64 runtime_ns)
 			printf("# %s refused %" PRIu64 " times: %s\n",
 			       usemem_ops[op].name, failed[op],
 			       strerror(error[op]));
+
+	printf("# huge pages: %lu kB -> %lu kB\n", huge_before, anon_huge_kb());
 out:
 	free(total);
 }
@@ -858,6 +896,7 @@ int bench_mem_usemem(int argc, const char **argv)
 {
 	struct usemem_thread *threads;
 	struct sigaction act = { 0 };
+	unsigned long huge_before;
 	u64 start_ns, runtime_ns;
 	unsigned int i, nr_started;
 	int ret = 0;
@@ -962,6 +1001,7 @@ int bench_mem_usemem(int argc, const char **argv)
 	threads_starting -= nr_threads - nr_started;
 	while (threads_starting)
 		cond_wait(&start_parent, &start_lock);
+	huge_before = anon_huge_kb();
 	start_ns = now_ns();
 	cond_broadcast(&start_worker);
 	mutex_unlock(&start_lock);
@@ -982,7 +1022,7 @@ int bench_mem_usemem(int argc, const char **argv)
 	mutex_destroy(&start_lock);
 
 	if (!ret)
-		report(threads, runtime_ns);
+		report(threads, runtime_ns, huge_before);
 out:
 	for (i = 0; i < nr_threads; i++) {
 		if (threads[i].region)
