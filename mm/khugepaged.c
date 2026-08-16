@@ -308,7 +308,7 @@ static bool pte_none_or_zero(pte_t pte)
  *
  * Return: Maximum number of empty/shared zeropage PTEs for the collapse operation
  */
-static unsigned int collapse_max_ptes_none(struct collapse_control *cc,
+unsigned int collapse_max_ptes_none(struct collapse_control *cc,
 		struct vm_area_struct *vma, unsigned int order)
 {
 	const unsigned int max_ptes_none = cc->policy.max_ptes_none;
@@ -344,7 +344,7 @@ static unsigned int collapse_max_ptes_none(struct collapse_control *cc,
  * Return: Maximum number of PTEs that map shared anonymous pages for the
  * collapse operation
  */
-static unsigned int collapse_max_ptes_shared(struct collapse_control *cc,
+unsigned int collapse_max_ptes_shared(struct collapse_control *cc,
 		unsigned int order)
 {
 	/*
@@ -365,7 +365,7 @@ static unsigned int collapse_max_ptes_shared(struct collapse_control *cc,
  * Return: Maximum number of non-present PTEs or the maximum allowed non-present
  * pagecache entries for the collapse operation.
  */
-static unsigned int collapse_max_ptes_swap(struct collapse_control *cc,
+unsigned int collapse_max_ptes_swap(struct collapse_control *cc,
 		unsigned int order)
 {
 	/*
@@ -917,7 +917,7 @@ static void khugepaged_alloc_sleep(void)
 
 static struct collapse_control khugepaged_collapse_control;
 
-static bool collapse_scan_abort(int nid, struct collapse_control *cc)
+bool collapse_scan_abort(int nid, struct collapse_control *cc)
 {
 	int i;
 
