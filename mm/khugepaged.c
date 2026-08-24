@@ -1241,7 +1241,7 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
 	if (result != SCAN_SUCCEED)
 		goto out_nolock;
 
-	if (folio_memcg_alloc_deferred(folio)) {
+	if (folio_memcg_alloc_deferred(folio, GFP_KERNEL)) {
 		result = SCAN_ALLOC_HUGE_PAGE_FAIL;
 		goto out_nolock;
 	}

@@ -5331,7 +5331,7 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 			folio_put(folio);
 			goto next;
 		}
-		if (order > 1 && folio_memcg_alloc_deferred(folio)) {
+		if (order > 1 && folio_memcg_alloc_deferred(folio, GFP_KERNEL)) {
 			folio_put(folio);
 			goto fallback;
 		}

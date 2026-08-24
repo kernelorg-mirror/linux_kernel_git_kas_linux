@@ -1054,11 +1054,16 @@ static inline void hugepage_exit_sysfs(struct kobject *hugepage_kobj)
 }
 #endif /* CONFIG_SYSFS */
 
-int folio_memcg_alloc_deferred(struct folio *folio)
+/*
+ * Take the memcg's deferred-split list heads with @gfp, so that a later split
+ * of @folio does not have to allocate them.  Only the first folio in a memcg
+ * pays: the heads it allocates serve every folio after it.
+ */
+int folio_memcg_alloc_deferred(struct folio *folio, gfp_t gfp)
 {
 	if (mem_cgroup_disabled())
 		return 0;
-	return folio_memcg_list_lru_alloc(folio, &deferred_split_lru, GFP_KERNEL);
+	return folio_memcg_list_lru_alloc(folio, &deferred_split_lru, gfp);
 }
 
 static int __init thp_shrinker_init(void)
@@ -1373,7 +1378,7 @@ static struct folio *vma_alloc_anon_folio_pmd(struct vm_area_struct *vma,
 		return NULL;
 	}
 
-	if (folio_memcg_alloc_deferred(folio)) {
+	if (folio_memcg_alloc_deferred(folio, GFP_KERNEL)) {
 		folio_put(folio);
 		count_vm_event(THP_FAULT_FALLBACK);
 		count_mthp_stat(order, MTHP_STAT_ANON_FAULT_FALLBACK);

@@ -478,7 +478,7 @@ static struct folio *__swap_cache_alloc(struct swap_cluster_info *ci,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	if (order > 1 && folio_memcg_alloc_deferred(folio)) {
+	if (order > 1 && folio_memcg_alloc_deferred(folio, GFP_KERNEL)) {
 		spin_lock(&ci->lock);
 		__swap_cache_do_del_folio(ci, folio, entry, shadow);
 		spin_unlock(&ci->lock);
