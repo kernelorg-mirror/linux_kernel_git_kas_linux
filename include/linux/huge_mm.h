@@ -420,7 +420,7 @@ static inline int split_huge_page(struct page *page)
 	return split_huge_page_to_list_to_order(page, NULL, 0);
 }
 
-int folio_memcg_alloc_deferred(struct folio *folio);
+int folio_memcg_alloc_deferred(struct folio *folio, gfp_t gfp);
 
 void deferred_split_folio(struct folio *folio, bool partially_mapped);
 
@@ -652,7 +652,7 @@ static inline int try_folio_split_to_order(struct folio *folio,
 	return -EINVAL;
 }
 
-static inline int folio_memcg_alloc_deferred(struct folio *folio)
+static inline int folio_memcg_alloc_deferred(struct folio *folio, gfp_t gfp)
 {
 	return 0;
 }

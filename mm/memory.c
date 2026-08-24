@@ -4756,7 +4756,7 @@ static struct folio *alloc_swap_folio(struct vm_fault *vmf)
 			if (!mem_cgroup_swapin_charge_folio(folio, vma->vm_mm,
 							    gfp, entry)) {
 				if (order > 1 &&
-				    folio_memcg_alloc_deferred(folio)) {
+				    folio_memcg_alloc_deferred(folio, GFP_KERNEL)) {
 					folio_put(folio);
 					goto fallback;
 				}
@@ -5282,10 +5282,6 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 				folio_put(folio);
 				goto next;
 			}
-			if (order > 1 && folio_memcg_alloc_deferred(folio)) {
-				folio_put(folio);
-				goto fallback;
-			}
 			folio_throttle_swaprate(folio, gfp);
 			/*
 			 * When a folio is not zeroed during allocation
@@ -5298,6 +5294,21 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 				folio_zero_user(folio, vmf->address);
 			return folio;
 		}
+		if (order > 1 && folio_memcg_alloc_deferred(folio, GFP_KERNEL)) {
+			folio_put(folio);
+			goto fallback;
+		}
+		folio_throttle_swaprate(folio, gfp);
+		/*
+		 * When a folio is not zeroed during allocation
+		 * (__GFP_ZERO not used) or user folios require special
+		 * handling, folio_zero_user() is used to make sure
+		 * that the page corresponding to the faulting address
+		 * will be hot in the cache after zeroing.
+		 */
+		if (user_alloc_needs_zeroing())
+			folio_zero_user(folio, vmf->address);
+		return folio;
 next:
 		count_mthp_stat(order, MTHP_STAT_ANON_FAULT_FALLBACK);
 		order = next_order(&orders, order);
