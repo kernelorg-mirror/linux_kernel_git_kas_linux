@@ -2006,6 +2006,17 @@ static inline struct page *_zero_page(unsigned long addr)
 
 #ifdef CONFIG_MMU
 
+/**
+ * pte_is_zero_page - Does this PTE map the shared zeropage?
+ * @pte: The page table entry to test.
+ *
+ * Return: %true if @pte is present and maps the shared zeropage.
+ */
+static inline bool pte_is_zero_page(pte_t pte)
+{
+	return pte_present(pte) && is_zero_pfn(pte_pfn(pte));
+}
+
 #ifndef CONFIG_TRANSPARENT_HUGEPAGE
 static inline int pmd_trans_huge(pmd_t pmd)
 {
