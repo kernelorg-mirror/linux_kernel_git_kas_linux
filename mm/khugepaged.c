@@ -297,9 +297,7 @@ struct attribute_group khugepaged_attr_group = {
 
 static bool pte_none_or_zero(pte_t pte)
 {
-	if (pte_none(pte))
-		return true;
-	return pte_present(pte) && is_zero_pfn(pte_pfn(pte));
+	return pte_none(pte) || pte_is_zero_page(pte);
 }
 
 /**
