@@ -7,6 +7,15 @@
 #ifndef __MM_INTERNAL_H
 #define __MM_INTERNAL_H
 
+/*
+ * Names the collapse code carries from 7.3.  This tree keeps the older
+ * spelling for the userfaultfd PTE accessors and the rmap interval tree.
+ */
+#define pte_uffd(pte)			pte_uffd_wp(pte)
+#define pte_swp_uffd_any(pte)		pte_swp_uffd_wp(pte)
+#define mapping_rmap_tree_foreach(vma, mapping, start, last)	\
+	vma_interval_tree_foreach(vma, &(mapping)->i_mmap, start, last)
+
 #include <linux/fs.h>
 #include <linux/khugepaged.h>
 #include <linux/mm.h>
