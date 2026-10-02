@@ -155,10 +155,15 @@ defrag_mode
 ===========
 
 When set to 1, the page allocator tries harder to avoid fragmentation
-and maintain the ability to produce huge pages / higher-order pages.
+and maintain the ability to produce huge pages / higher-order pages:
+reclaim and compaction run before an allocation falls back to a
+pageblock of another migratetype, and kswapd and kcompactd keep the
+watermarks in whole pageblocks. This is the default.
 
-It is recommended to enable this right after boot, as fragmentation,
-once it occurred, can be long-lasting or even permanent.
+When set to 0, allocations fall back to pageblocks of another type
+before reclaim and compaction are tried. Fragmentation, once it
+occurred, can be long-lasting or even permanent, so if this is set to 0
+at boot, enabling it later recovers little.
 
 dirty_background_bytes
 ======================
