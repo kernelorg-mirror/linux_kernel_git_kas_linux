@@ -2092,6 +2092,8 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 
 		ret = test_pages_isolated(start_pfn, end_pfn,
 					  PB_ISOLATE_MODE_MEM_OFFLINE);
+		if (ret && zone_page_state_snapshot(zone, NR_FREE_RCU_PAGES))
+			rcu_free_sync();
 
 	} while (ret);
 
