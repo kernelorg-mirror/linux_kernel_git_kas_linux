@@ -2752,11 +2752,32 @@ err:
 	return err;
 }
 
-static inline bool pos_same_folio(loff_t pos1, loff_t pos2, struct folio *folio)
+/*
+ * Is a read from @pos a new access to @folio?  @end is where the read asked
+ * to end, not where it stopped.  @last_pos is one past the last byte of the
+ * previous read through the file.
+ */
+static bool filemap_read_new_access(struct folio *folio, loff_t pos,
+				    loff_t end, loff_t last_pos)
 {
-	unsigned int shift = folio_shift(folio);
+	/* The previous read ended in another folio */
+	if (last_pos <= folio_pos(folio) || last_pos > folio_next_pos(folio))
+		return true;
+	/* This one starts over at the folio's first byte */
+	if (pos == folio_pos(folio))
+		return true;
+	/* It reads again up to where the previous read ended */
+	if (end == last_pos && end != pos)
+		return true;
+	/* Otherwise it goes on in the folio the previous read ended in */
+	return false;
+}
 
-	return (pos1 >> shift == pos2 >> shift);
+static void filemap_read_accessed(struct folio *folio, loff_t pos,
+				  loff_t end, loff_t last_pos)
+{
+	if (filemap_read_new_access(folio, pos, end, last_pos))
+		folio_mark_accessed(folio);
 }
 
 static void filemap_end_dropbehind_read(struct folio *folio)
@@ -2794,7 +2815,7 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 	struct folio_batch fbatch;
 	int i, error = 0;
 	bool writably_mapped;
-	loff_t isize, end_offset;
+	loff_t isize, end_offset, end;
 	loff_t last_pos = ra->prev_pos;
 
 	if (unlikely(iocb->ki_pos < 0))
@@ -2805,6 +2826,7 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 		return 0;
 
 	iov_iter_truncate(iter, inode->i_sb->s_maxbytes - iocb->ki_pos);
+	end = iocb->ki_pos + iov_iter_count(iter);
 	folio_batch_init(&fbatch);
 
 	do {
@@ -2844,14 +2866,6 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 		 */
 		writably_mapped = mapping_writably_mapped(mapping);
 
-		/*
-		 * When a read accesses the same folio several times, only
-		 * mark it as accessed the first time.
-		 */
-		if (!pos_same_folio(iocb->ki_pos, last_pos - 1,
-				    fbatch.folios[0]))
-			folio_mark_accessed(fbatch.folios[0]);
-
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
 			size_t fsize = folio_size(folio);
@@ -2862,8 +2876,8 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 
 			if (end_offset < folio_pos(folio))
 				break;
-			if (i > 0)
-				folio_mark_accessed(folio);
+			filemap_read_accessed(folio, iocb->ki_pos, end,
+					      last_pos);
 			/*
 			 * If users can be writing to this folio using arbitrary
 			 * virtual addresses, take care of potential aliasing
