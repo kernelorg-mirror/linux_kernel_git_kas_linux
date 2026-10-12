@@ -653,6 +653,12 @@ unsigned long mapping_try_invalidate(struct address_space *mapping,
 static inline void folio_mark_removed_from_cache(struct address_space *mapping,
 						 struct folio *folio)
 {
+	/*
+	 * Prototype: removal no longer marks; filemap_read() marks the
+	 * folios it finds hot.  A real patch drops this helper and its
+	 * callers.
+	 */
+	return;
 	if (folio_test_hugetlb(folio))
 		return;
 	if (mapping->host && (inode_state_read_once(mapping->host) & I_FREEING)) {

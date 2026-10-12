@@ -2761,6 +2761,25 @@ err:
 	return err;
 }
 
+/*
+ * A folio that reads keep coming back to is worth reading without a
+ * reference.  From now on it is freed only after a grace period
+ * (PG_rcu_free, cleared only when it is freed), and filemap_read_rcu()
+ * may copy from it.  @hot is folio_mark_accessed_noop() before this read
+ * marked it accessed, or a read going back into the folio the previous
+ * one ended in.  The set is fully ordered, so a reader that sees the flag
+ * and then finds the folio in its slot sees what came before it.
+ */
+static void filemap_mark_hot(struct folio *folio, bool hot)
+{
+	if (!hot || folio_test_rcu_free(folio) ||
+	    !folio_test_uptodate(folio) || folio_test_readahead(folio) ||
+	    folio_test_dropbehind(folio) || folio_test_unevictable(folio))
+		return;
+	if (!test_and_set_bit(PG_rcu_free, &folio->flags.f))
+		count_vm_events(PGFREE_RCU_MARK, folio_nr_pages(folio));
+}
+
 static inline bool pos_same_folio(loff_t pos1, loff_t pos2, struct folio *folio)
 {
 	unsigned int shift = folio_shift(folio);
@@ -2843,6 +2862,24 @@ static bool filemap_read_rcu_batch(struct kiocb *iocb, struct iov_iter *iter,
 			break;
 
 		if (folio != prev) {
+			/*
+			 * Only a folio that filemap_read() marked hot is freed
+			 * after a grace period.  The page may be anything by
+			 * now, a tail page or no folio at all, so test the bit
+			 * directly.  The flag can be a later folio's in the
+			 * same memory: the slot must still hold this folio
+			 * after the flag was seen, and nothing else of the
+			 * folio is read before that.  A folio validated here
+			 * stays valid for the rest of the RCU section.
+			 */
+			if (!test_bit(PG_rcu_free, &folio->flags.f))
+				break;
+			/* The flag before the slot, pairs with the marking */
+			smp_rmb();
+			if (xas_reload(&xas) != folio)
+				break;
+			/* The slot before anything else of the folio */
+			smp_rmb();
 			if (!folio_test_uptodate(folio) ||
 			    folio_test_readahead(folio) ||
 			    folio_test_dropbehind(folio))
@@ -2939,6 +2976,7 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 	loff_t isize, end_offset;
 	loff_t last_pos = ra->prev_pos;
 	size_t fast_read;
+	bool hot;
 
 	if (unlikely(iocb->ki_pos < 0))
 		return -EINVAL;
@@ -2999,9 +3037,13 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 		 * When a read accesses the same folio several times, only
 		 * mark it as accessed the first time.
 		 */
+		hot = folio_mark_accessed_noop(fbatch.folios[0]);
 		if (!pos_same_folio(iocb->ki_pos, last_pos - 1,
 				    fbatch.folios[0]))
 			folio_mark_accessed(fbatch.folios[0]);
+		else if (iocb->ki_pos < last_pos)
+			hot = true;
+		filemap_mark_hot(fbatch.folios[0], hot);
 
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
@@ -3013,8 +3055,11 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 
 			if (end_offset < folio_pos(folio))
 				break;
-			if (i > 0)
+			if (i > 0) {
+				filemap_mark_hot(folio,
+						 folio_mark_accessed_noop(folio));
 				folio_mark_accessed(folio);
+			}
 			/*
 			 * If users can be writing to this folio using arbitrary
 			 * virtual addresses, take care of potential aliasing
