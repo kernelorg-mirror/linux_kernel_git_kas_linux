@@ -1348,6 +1348,7 @@ const char * const vmstat_text[] = {
 	[I(PGFREE_RCU_DONE)]			= "pgfree_rcu_done",
 	[I(PGFREE_RCU_SKIP)]			= "pgfree_rcu_skip",
 	[I(PGFREE_RCU_MARK)]			= "pgfree_rcu_mark",
+	[I(PGFREE_RCU_KICK)]			= "pgfree_rcu_kick",
 	[I(PGFREE_RCU_DRAIN)]			= "pgfree_rcu_drain",
 
 	[I(PGFAULT)]				= "pgfault",
