@@ -1355,22 +1355,39 @@ static void rcu_free_take(struct rcu_free_pcpu *r, struct list_head *list)
 	r->nr_pending = 0;
 }
 
+/* All of @fbatch is in @zone: uncount the folios once they are free */
+static void rcu_free_batch(struct folio_batch *fbatch, struct zone *zone,
+			   long nr)
+{
+	free_unref_folios(fbatch);
+	mod_zone_page_state(zone, NR_FREE_RCU_PAGES, -nr);
+}
+
 static unsigned long rcu_free_pages(struct list_head *list)
 {
 	struct folio_batch fbatch;
 	struct folio *folio, *next;
+	struct zone *zone = NULL;
 	unsigned long nr = 0;
+	long zone_nr = 0;
 
 	folio_batch_init(&fbatch);
 	list_for_each_entry_safe(folio, next, list, lru) {
+		if (folio_zone(folio) != zone && folio_batch_count(&fbatch)) {
+			rcu_free_batch(&fbatch, zone, zone_nr);
+			zone_nr = 0;
+		}
+		zone = folio_zone(folio);
+		zone_nr += folio_nr_pages(folio);
 		nr += folio_nr_pages(folio);
 		if (!folio_batch_add(&fbatch, folio)) {
-			free_unref_folios(&fbatch);
+			rcu_free_batch(&fbatch, zone, zone_nr);
+			zone_nr = 0;
 			cond_resched_tasks_rcu_qs();
 		}
 	}
 	if (folio_batch_count(&fbatch))
-		free_unref_folios(&fbatch);
+		rcu_free_batch(&fbatch, zone, zone_nr);
 	return nr;
 }
 
@@ -1420,6 +1437,7 @@ static void rcu_free_defer(struct folio *folio)
 	unsigned long flags;
 
 	spin_lock_irqsave(&r->lock, flags);
+	__mod_zone_page_state(zone, NR_FREE_RCU_PAGES, folio_nr_pages(folio));
 	list_add_tail(&folio->lru, &r->pending);
 	r->nr_pending += folio_nr_pages(folio);
 	rcu_free_start(r);
@@ -1434,6 +1452,29 @@ static void rcu_free_defer(struct folio *folio)
 	    zone_page_state(zone, NR_FREE_PAGES) < high_wmark_pages(zone) &&
 	    !work_pending(&r->expedite))
 		queue_work(rcu_free_wq, &r->expedite);
+}
+
+/*
+ * Free what every CPU's lists hold.  A concurrent drain holds the lock
+ * until it has freed what it took.
+ */
+static void rcu_free_drain(void)
+{
+	static DEFINE_MUTEX(lock);
+	LIST_HEAD(list);
+	int cpu;
+
+	mutex_lock(&lock);
+	for_each_possible_cpu(cpu) {
+		struct rcu_free_pcpu *r = per_cpu_ptr(&rcu_free_pcpu, cpu);
+
+		spin_lock_irq(&r->lock);
+		rcu_free_take(r, &list);
+		spin_unlock_irq(&r->lock);
+	}
+	if (rcu_free_flush(&list))
+		count_vm_event(PGFREE_RCU_DRAIN);
+	mutex_unlock(&lock);
 }
 
 static void __init rcu_free_init(void)
@@ -4784,6 +4825,52 @@ bool gfp_pfmemalloc_allowed(gfp_t gfp_mask)
 }
 
 /*
+ * Reclaim is about to give up: if the pages waiting for a grace period
+ * would bring an eligible zone above its min watermark, free them and
+ * retry.  Not for a dying task, which frees memory by exiting.
+ */
+static bool rcu_free_wait(gfp_t gfp_mask, unsigned int order,
+			  struct alloc_context *ac, int alloc_flags,
+			  int *rcu_free_waits)
+{
+	struct zone *zone;
+	struct zoneref *z;
+
+	if (!IS_ENABLED(CONFIG_PAGE_RCU_FREE))
+		return false;
+	if (tsk_is_oom_victim(current) || fatal_signal_pending(current))
+		return false;
+	if (*rcu_free_waits >= MAX_RECLAIM_RETRIES ||
+	    order > PAGE_ALLOC_COSTLY_ORDER)
+		return false;
+
+	for_each_zone_zonelist_nodemask(zone, z, ac->zonelist,
+				ac->highest_zoneidx, ac->nodemask) {
+		unsigned long waiting, available;
+
+		if (cpusets_enabled() && (alloc_flags & ALLOC_CPUSET) &&
+		    !__cpuset_zone_allowed(zone, gfp_mask))
+			continue;
+
+		waiting = zone_page_state_snapshot(zone, NR_FREE_RCU_PAGES);
+		if (!waiting)
+			continue;
+
+		available = waiting +
+			    zone_page_state_snapshot(zone, NR_FREE_PAGES);
+		if (__zone_watermark_ok(zone, order, min_wmark_pages(zone),
+					ac->highest_zoneidx, alloc_flags,
+					available)) {
+			(*rcu_free_waits)++;
+			rcu_free_drain();
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
  * Checks whether it makes sense to retry the reclaim to make a forward progress
  * for the given allocation request.
  *
@@ -4796,7 +4883,8 @@ bool gfp_pfmemalloc_allowed(gfp_t gfp_mask)
 static inline bool
 should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 		     struct alloc_context *ac, int alloc_flags,
-		     bool did_some_progress, int *no_progress_loops)
+		     bool did_some_progress, int *no_progress_loops,
+		     int *rcu_free_waits)
 {
 	struct zone *zone;
 	struct zoneref *z;
@@ -4807,10 +4895,12 @@ should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 	 * their order will become available due to high fragmentation so
 	 * always increment the no progress counter for them
 	 */
-	if (did_some_progress && order <= PAGE_ALLOC_COSTLY_ORDER)
+	if (did_some_progress && order <= PAGE_ALLOC_COSTLY_ORDER) {
 		*no_progress_loops = 0;
-	else
+		*rcu_free_waits = 0;
+	} else {
 		(*no_progress_loops)++;
+	}
 
 	if (*no_progress_loops > MAX_RECLAIM_RETRIES)
 		goto out;
@@ -4863,6 +4953,10 @@ should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 	else
 		cond_resched();
 out:
+	if (!ret && rcu_free_wait(gfp_mask, order, ac, alloc_flags,
+				  rcu_free_waits))
+		return true;
+
 	/* Before OOM, exhaust highatomic_reserve */
 	if (!ret)
 		return unreserve_highatomic_pageblock(ac, true);
@@ -4952,6 +5046,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	enum compact_result compact_result;
 	int compaction_retries;
 	int no_progress_loops;
+	int rcu_free_waits;
 	unsigned int cpuset_mems_cookie;
 	unsigned int zonelist_iter_cookie;
 	int reserve_flags;
@@ -4976,6 +5071,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 restart:
 	compaction_retries = 0;
 	no_progress_loops = 0;
+	rcu_free_waits = 0;
 	compact_result = COMPACT_SKIPPED;
 	compact_priority = DEF_COMPACT_PRIORITY;
 	cpuset_mems_cookie = read_mems_allowed_begin();
@@ -5154,7 +5250,8 @@ retry:
 		goto restart;
 
 	if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
-				 did_some_progress > 0, &no_progress_loops))
+				 did_some_progress > 0, &no_progress_loops,
+				 &rcu_free_waits))
 		goto retry;
 
 	/*
@@ -5197,6 +5294,7 @@ retry:
 	/* Retry as long as the OOM killer is making progress */
 	if (did_some_progress) {
 		no_progress_loops = 0;
+		rcu_free_waits = 0;
 		goto retry;
 	}
 
