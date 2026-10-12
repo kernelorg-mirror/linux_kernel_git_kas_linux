@@ -1999,6 +1999,7 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 		.nid = NUMA_NO_NODE,
 	};
 	unsigned long flags;
+	bool migrated;
 	char *reason;
 	int ret;
 	unsigned long normal_pages = 0;
@@ -2082,6 +2083,7 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 
 	do {
 		pfn = start_pfn;
+		migrated = false;
 		do {
 			/*
 			 * Historically we always checked for any signal and
@@ -2103,6 +2105,7 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 				 * out
 				 */
 				do_migrate_range(pfn, end_pfn);
+				migrated = true;
 			}
 		} while (!ret);
 
@@ -2124,6 +2127,9 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 
 		ret = test_pages_isolated(start_pfn, end_pfn,
 					  PB_ISOLATE_MODE_MEM_OFFLINE);
+		/* What this pass migrated can wait for a grace period */
+		if (ret && migrated && zone_rcu_free_waiting(zone))
+			rcu_free_drain();
 
 	} while (ret);
 

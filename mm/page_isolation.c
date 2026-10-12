@@ -65,7 +65,9 @@ bool page_is_unmovable(struct zone *zone, struct page *page,
 			if (!h || !hugepage_migration_supported(h))
 				return true;
 		} else if (!PageLRU(page)) {
-			return true;
+			/* Freed, waiting for a grace period: free soon */
+			if (!folio_test_rcu_free(folio) || folio_ref_count(folio))
+				return true;
 		}
 
 		nr_pages = 1UL << order;

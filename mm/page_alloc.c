@@ -1364,6 +1364,8 @@ static unsigned long rcu_free_pages(struct list_head *list, bool direct)
 		nr += 1 << order;
 		mod_zone_page_state(page_zone(page), NR_FREE_RCU_PAGES,
 				    -(1 << order));
+		/* Atomic: memory_failure() may set PG_hwpoison meanwhile */
+		ClearPageRcuFree(page);
 		if (direct) {
 			__free_pages_ok(page, order, FPI_NONE);
 			cond_resched();
@@ -1451,15 +1453,18 @@ static void rcu_free_defer(struct page *page, unsigned int order)
 }
 
 /*
- * Free what every CPU's lists hold, straight to the buddy lists: the
- * callers want to allocate the pages next.  A concurrent drain holds the
- * lock until it has freed what it took.
+ * Free every waiting page now, straight to the buddy lists, where the
+ * callers look for the pages next.  A concurrent drain holds the lock
+ * until it has freed what it took.
  */
-static void rcu_free_drain(void)
+void rcu_free_drain(void)
 {
 	static DEFINE_MUTEX(lock);
 	LIST_HEAD(list);
 	int cpu;
+
+	if (!IS_ENABLED(CONFIG_FOLIO_RCU_FREE))
+		return;
 
 	mutex_lock(&lock);
 	for_each_possible_cpu(cpu) {
@@ -1522,7 +1527,6 @@ static __always_inline bool __free_pages_prepare(struct page *page,
 	 */
 	if (unlikely(PageRcuFree(page)) && !(PageHWPoison(page) && !order)) {
 		VM_WARN_ON_ONCE(fpi_flags & FPI_NOLOCK);
-		__ClearPageRcuFree(page);
 		count_vm_events(PGFREE_RCU, 1 << order);
 		rcu_free_defer(page, order);
 		return false;
@@ -7715,7 +7719,17 @@ int alloc_contig_frozen_range_noprof(unsigned long start, unsigned long end,
 	outer_start = find_large_buddy(start);
 
 	/* Make sure the range is really isolated. */
-	if (test_pages_isolated(outer_start, end, mode)) {
+	ret = test_pages_isolated(outer_start, end, mode);
+	if (ret) {
+		if (zone_rcu_free_waiting(cc.zone))
+			rcu_free_drain();
+
+		/* A folio freed since can merge with a free buddy below start */
+		outer_start = find_large_buddy(start);
+		ret = test_pages_isolated(outer_start, end, mode);
+	}
+
+	if (ret) {
 		ret = -EBUSY;
 		goto done;
 	}
