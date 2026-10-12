@@ -718,6 +718,13 @@ config PCP_BATCH_SCALE_MAX
 	  latency.  This option sets the upper limit of scale factor to limit
 	  the maximum latency.
 
+config PAGE_RCU_FREE
+	def_bool 64BIT
+	help
+	  This adds PG_rcu_free to 'struct page': the page allocator takes a
+	  folio with the flag back only after an RCU grace period.  Page
+	  flags are scarce on 32-bit.
+
 config PHYS_ADDR_T_64BIT
 	def_bool 64BIT
 
