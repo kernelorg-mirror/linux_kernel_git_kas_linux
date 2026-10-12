@@ -2779,6 +2779,8 @@ static bool filemap_rcu_free_allowed(struct folio *folio)
  */
 static void filemap_mark_accessed(struct folio *folio)
 {
+	struct address_space *mapping;
+
 	if (!filemap_rcu_free_allowed(folio) ||
 	    !folio_mark_accessed_noop(folio)) {
 		folio_mark_accessed(folio);
@@ -2788,8 +2790,14 @@ static void filemap_mark_accessed(struct folio *folio)
 	/* No atomic op on the flags of a folio that has it already */
 	if (folio_test_rcu_free(folio))
 		return;
-	if (!folio_test_set_rcu_free(folio))
-		count_vm_events(PGFREE_RCU_MARK, folio_nr_pages(folio));
+	if (folio_test_set_rcu_free(folio))
+		return;
+
+	count_vm_events(PGFREE_RCU_MARK, folio_nr_pages(folio));
+	/* NULL if the folio was truncated meanwhile */
+	mapping = READ_ONCE(folio->mapping);
+	if (mapping)
+		mapping_set_rcu_read(mapping);
 }
 
 /*
@@ -2818,6 +2826,85 @@ static void filemap_read_accessed(struct folio *folio, loff_t pos,
 {
 	if (filemap_read_new_access(folio, pos, end, last_pos))
 		filemap_mark_accessed(folio);
+}
+
+/*
+ * Copy from folios with PG_rcu_free without taking references, and return
+ * how much was copied; the caller reads the rest.  The memory of a folio
+ * is not reused before rcu_read_unlock() if the flag was seen and then
+ * the folio was still in its slot.  A split can change a folio's size
+ * meanwhile, so copy page by page, each page looked up in i_pages.
+ */
+static size_t filemap_read_rcu(struct kiocb *iocb, struct iov_iter *iter)
+{
+	struct address_space *mapping = iocb->ki_filp->f_mapping;
+	struct inode *inode = mapping->host;
+	XA_STATE(xas, &mapping->i_pages, 0);
+	size_t copied = 0;
+
+	if (!IS_ENABLED(CONFIG_PAGE_RCU_FREE) || !mapping_rcu_read(mapping))
+		return 0;
+	/* An aliasing D-cache needs flush_dcache_folio(), under a reference */
+	if (cpu_dcache_is_aliasing() && mapping_writably_mapped(mapping))
+		return 0;
+
+	rcu_read_lock();
+	/* A fault ends the copy: it cannot be handled here */
+	pagefault_disable();
+	while (iov_iter_count(iter) && copied < SZ_128K) {
+		loff_t pos = iocb->ki_pos;
+		pgoff_t index = pos >> PAGE_SHIFT;
+		size_t offset = offset_in_page(pos);
+		struct folio *folio;
+		struct page *page;
+		size_t bytes, n;
+		loff_t isize;
+
+		xas_set(&xas, index);
+		folio = xas_load(&xas);
+		if (xas_retry(&xas, folio) || !folio || xa_is_value(folio))
+			break;
+
+		/* Not folio_test_rcu_free(): may be a tail page by now */
+		if (!(READ_ONCE(folio->flags.f) & __PG_RCU_FREE))
+			break;
+		/* Pairs with folio_test_set_rcu_free() */
+		smp_rmb();
+		if (xas_reload(&xas) != folio)
+			break;
+		/* Pairs with the store into i_pages */
+		smp_rmb();
+
+		if (!folio_test_uptodate(folio) || folio_test_readahead(folio))
+			break;
+		/* folio_mark_accessed() needs a reference */
+		if (!folio_mark_accessed_noop(folio))
+			break;
+		page = folio_page(folio, index - folio->index);
+		/* memory_failure() waits only for readers that got past this */
+		if (PageHWPoison(page))
+			break;
+
+		isize = i_size_read(inode);
+		if (pos >= isize)
+			break;
+		/* A write that moved i_size used the folio in the slot */
+		if (xas_reload(&xas) != folio)
+			break;
+		bytes = min_t(loff_t, isize - pos,
+			      min(iov_iter_count(iter), PAGE_SIZE - offset));
+
+		/* Not _nofault(): its usercopy check reads the folio's order */
+		n = copy_page_to_iter(page, offset, bytes, iter);
+		copied += n;
+		iocb->ki_pos += n;
+		if (n < bytes)
+			break;
+	}
+	pagefault_enable();
+	rcu_read_unlock();
+
+	return copied;
 }
 
 static void filemap_end_dropbehind_read(struct folio *folio)
@@ -2857,6 +2944,7 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 	bool writably_mapped;
 	loff_t isize, end_offset, end;
 	loff_t last_pos = ra->prev_pos;
+	size_t fast_read;
 
 	if (unlikely(iocb->ki_pos < 0))
 		return -EINVAL;
@@ -2868,6 +2956,14 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 	iov_iter_truncate(iter, inode->i_sb->s_maxbytes - iocb->ki_pos);
 	end = iocb->ki_pos + iov_iter_count(iter);
 	folio_batch_init(&fbatch);
+
+	fast_read = filemap_read_rcu(iocb, iter);
+	if (fast_read) {
+		already_read += fast_read;
+		last_pos = iocb->ki_pos;
+		if (!iov_iter_count(iter))
+			goto out;
+	}
 
 	do {
 		cond_resched();
@@ -2946,9 +3042,11 @@ put_folios:
 		}
 		folio_batch_init(&fbatch);
 	} while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
-
+out:
 	file_accessed(filp);
-	ra->prev_pos = last_pos;
+	/* Readers sharing the file would bounce the line for nothing */
+	if (ra->prev_pos != last_pos)
+		ra->prev_pos = last_pos;
 	return already_read ? already_read : error;
 }
 EXPORT_SYMBOL_GPL(filemap_read);
