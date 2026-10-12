@@ -407,7 +407,6 @@ void truncate_inode_pages_range(struct address_space *mapping,
 			folio_unlock(fbatch.folios[i]);
 		folio_batch_release(&fbatch);
 		cond_resched();
-		rcu_free_cond_resched();
 	}
 
 	same_folio = (lstart >> PAGE_SHIFT) == (lend >> PAGE_SHIFT);
@@ -438,7 +437,6 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	index = start;
 	while (index < end) {
 		cond_resched();
-		rcu_free_cond_resched();
 		if (!find_get_entries(mapping, &index, end - 1, &fbatch,
 				indices)) {
 			/* If all gone from start onwards, we're done */
@@ -580,7 +578,6 @@ unsigned long mapping_try_invalidate(struct address_space *mapping,
 		folio_batch_remove_exceptionals(&fbatch);
 		folio_batch_release(&fbatch);
 		cond_resched();
-		rcu_free_cond_resched();
 	}
 	return count;
 }
@@ -738,7 +735,6 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 		folio_batch_remove_exceptionals(&fbatch);
 		folio_batch_release(&fbatch);
 		cond_resched();
-		rcu_free_cond_resched();
 	}
 	/*
 	 * For DAX we invalidate page tables after invalidating page cache.  We

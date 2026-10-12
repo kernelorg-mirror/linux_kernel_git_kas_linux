@@ -668,19 +668,6 @@ static inline void folio_mark_removed_from_cache(struct address_space *mapping,
 	folio_set_rcu_free(folio);
 }
 
-/*
- * For a loop that removes folios from the page cache, next to its
- * cond_resched().  The frees can queue the expedite work for this CPU
- * (mm/page_alloc.c).  With lazy preemption cond_resched() does nothing
- * and the woken kworker gets the CPU at the next tick, so make way here
- * if the scheduler has asked for it.
- */
-static inline void rcu_free_cond_resched(void)
-{
-	if (tif_test_bit(TIF_NEED_RESCHED_LAZY))
-		schedule();
-}
-
 /**
  * folio_evictable - Test whether a folio is evictable.
  * @folio: The folio to test.
