@@ -2821,8 +2821,8 @@ static bool filemap_read_new_access(struct folio *folio, loff_t pos,
 	return false;
 }
 
-static void filemap_read_accessed(struct folio *folio, loff_t pos,
-				  loff_t end, loff_t last_pos)
+void filemap_read_accessed(struct folio *folio, loff_t pos, loff_t end,
+			   loff_t last_pos)
 {
 	if (filemap_read_new_access(folio, pos, end, last_pos))
 		filemap_mark_accessed(folio);
