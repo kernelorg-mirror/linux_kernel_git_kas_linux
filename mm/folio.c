@@ -376,6 +376,17 @@ static void lru_gen_inc_refs(struct folio *folio)
 	} while (!try_cmpxchg(&folio->flags.f, &old_flags, new_flags));
 }
 
+/* Whether lru_gen_inc_refs() would leave @folio unchanged */
+static bool lru_gen_refs_full(struct folio *folio)
+{
+	if (folio_test_unevictable(folio))
+		return true;
+
+	return folio_test_referenced(folio) &&
+	       (READ_ONCE(folio->flags.f) & LRU_REFS_MASK) == LRU_REFS_MASK &&
+	       folio_test_workingset(folio);
+}
+
 static bool lru_gen_clear_refs(struct folio *folio)
 {
 	int gen = folio_lru_gen(folio);
@@ -398,6 +409,11 @@ static bool lru_gen_clear_refs(struct folio *folio)
 
 static void lru_gen_inc_refs(struct folio *folio)
 {
+}
+
+static bool lru_gen_refs_full(struct folio *folio)
+{
+	return true;
 }
 
 static bool lru_gen_clear_refs(struct folio *folio)
@@ -455,6 +471,19 @@ void folio_mark_accessed(struct folio *folio)
 		folio_clear_idle(folio);
 }
 EXPORT_SYMBOL(folio_mark_accessed);
+
+/* Whether folio_mark_accessed() would leave @folio unchanged */
+bool folio_mark_accessed_noop(struct folio *folio)
+{
+	if (folio_test_dropbehind(folio))
+		return true;
+	if (lru_gen_enabled())
+		return lru_gen_refs_full(folio);
+
+	return folio_test_referenced(folio) &&
+	       (folio_test_unevictable(folio) || folio_test_active(folio)) &&
+	       !folio_test_idle(folio);
+}
 
 /**
  * folio_add_lru - Add a folio to an LRU list.

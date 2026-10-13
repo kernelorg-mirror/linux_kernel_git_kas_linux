@@ -2752,6 +2752,40 @@ err:
 	return err;
 }
 
+/* Whether @folio may get PG_rcu_free once reads keep coming back to it */
+static bool filemap_rcu_free_allowed(struct folio *folio)
+{
+	if (!IS_ENABLED(CONFIG_PAGE_RCU_FREE))
+		return false;
+	/* The read drops it right after */
+	if (folio_test_dropbehind(folio))
+		return false;
+	/* Marking accessed stops changing it after at most one access */
+	if (folio_test_unevictable(folio))
+		return false;
+	return folio_test_uptodate(folio);
+}
+
+/*
+ * Mark @folio accessed.  If that would change nothing, readers keep coming
+ * back to it: set PG_rcu_free instead, so that they can read it without a
+ * reference.
+ */
+static void filemap_mark_accessed(struct folio *folio)
+{
+	if (!filemap_rcu_free_allowed(folio) ||
+	    !folio_mark_accessed_noop(folio)) {
+		folio_mark_accessed(folio);
+		return;
+	}
+
+	/* No atomic op on the flags of a folio that has it already */
+	if (folio_test_rcu_free(folio))
+		return;
+	if (!folio_test_set_rcu_free(folio))
+		count_vm_events(PGFREE_RCU_MARK, folio_nr_pages(folio));
+}
+
 /*
  * Is a read from @pos a new access to @folio?  @end is where the read asked
  * to end, not where it stopped.  @last_pos is one past the last byte of the
@@ -2777,7 +2811,7 @@ static void filemap_read_accessed(struct folio *folio, loff_t pos,
 				  loff_t end, loff_t last_pos)
 {
 	if (filemap_read_new_access(folio, pos, end, last_pos))
-		folio_mark_accessed(folio);
+		filemap_mark_accessed(folio);
 }
 
 static void filemap_end_dropbehind_read(struct folio *folio)
