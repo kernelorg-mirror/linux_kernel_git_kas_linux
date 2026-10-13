@@ -1565,6 +1565,21 @@ static int get_hwpoison_page(struct page *p, unsigned long flags)
 	return ret;
 }
 
+/* A page waiting for a grace period is not in the buddy yet: free it */
+static void mf_free_rcu_pages(struct page *p)
+{
+	if (!IS_ENABLED(CONFIG_PAGE_RCU_FREE))
+		return;
+	if (page_count(p))
+		return;
+	if (!zone_page_state_snapshot(page_zone(p), NR_FREE_RCU_PAGES))
+		return;
+	if (is_free_buddy_page(p))
+		return;
+
+	rcu_free_sync();
+}
+
 /*
  * The caller must guarantee the folio isn't large folio, except hugetlb.
  * try_to_unmap() can't handle it.
@@ -2440,6 +2455,7 @@ try_again:
 	if (res != -ENOENT)
 		goto unlock_mutex;
 
+	mf_free_rcu_pages(p);
 	if (TestSetPageHWPoison(p)) {
 		res = -EHWPOISON;
 		if (flags & MF_ACTION_REQUIRED)
@@ -2500,6 +2516,10 @@ try_again:
 	}
 
 	folio = page_folio(p);
+
+	/* Lockless readers that passed PageHWPoison() may still be copying */
+	if (folio_test_rcu_free(folio))
+		synchronize_rcu();
 
 	/* filter pages that are protected from hwpoison test by users */
 	folio_lock(folio);
@@ -3002,6 +3022,7 @@ int soft_offline_page(unsigned long pfn, int flags)
 	}
 
 retry:
+	mf_free_rcu_pages(page);
 	get_online_mems();
 	ret = get_hwpoison_page(page, flags | MF_SOFT_OFFLINE);
 	put_online_mems();
