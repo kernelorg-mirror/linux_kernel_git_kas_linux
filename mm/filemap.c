@@ -2835,7 +2835,7 @@ void filemap_read_accessed(struct folio *folio, loff_t pos, loff_t end,
  * the folio was still in its slot.  A split can change a folio's size
  * meanwhile, so copy page by page, each page looked up in i_pages.
  */
-static size_t filemap_read_rcu(struct kiocb *iocb, struct iov_iter *iter)
+size_t filemap_read_rcu(struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct address_space *mapping = iocb->ki_filp->f_mapping;
 	struct inode *inode = mapping->host;
@@ -2875,7 +2875,10 @@ static size_t filemap_read_rcu(struct kiocb *iocb, struct iov_iter *iter)
 		/* Pairs with the store into i_pages */
 		smp_rmb();
 
-		if (!folio_test_uptodate(folio) || folio_test_readahead(folio))
+		if (!folio_test_uptodate(folio))
+			break;
+		/* shmem does no readahead: there the bit is PG_reclaim */
+		if (folio_test_readahead(folio) && !shmem_mapping(mapping))
 			break;
 		/* folio_mark_accessed() needs a reference */
 		if (!folio_mark_accessed_noop(folio))
