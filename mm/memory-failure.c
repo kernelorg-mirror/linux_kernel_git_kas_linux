@@ -1458,6 +1458,21 @@ static int __get_hwpoison_page(struct page *page, unsigned long flags)
 	return 0;
 }
 
+/*
+ * A page waiting for a grace period is not in the buddy yet: free it.
+ * The zone's count of waiting pages drops before the free, so do not
+ * trust it.  A drain with nothing waiting starts no grace period.
+ */
+static void mf_free_rcu_pages(struct page *p)
+{
+	if (page_count(p))
+		return;
+	if (is_free_buddy_page(p))
+		return;
+
+	rcu_free_drain();
+}
+
 #define GET_PAGE_MAX_RETRY_NUM 3
 
 static int get_any_page(struct page *p, unsigned long flags)
@@ -1482,6 +1497,7 @@ static int get_any_page(struct page *p, unsigned long flags)
 	}
 
 try_again:
+	mf_free_rcu_pages(p);
 	if (!count_increased) {
 		ret = __get_hwpoison_page(p, flags);
 		if (!ret) {
@@ -2479,6 +2495,7 @@ try_again:
 	if (res != -ENOENT)
 		goto unlock_mutex;
 
+	mf_free_rcu_pages(p);
 	if (TestSetPageHWPoison(p)) {
 		res = -EHWPOISON;
 		if (flags & MF_ACTION_REQUIRED)
@@ -2486,6 +2503,14 @@ try_again:
 		if (flags & MF_COUNT_INCREASED)
 			put_page(p);
 		action_result(pfn, MF_MSG_ALREADY_POISONED, MF_FAILED);
+		/*
+		 * The memory_failure() that set PG_hwpoison may have failed
+		 * without waiting for lockless readers, and the caller may
+		 * unmap the page once this returns 0.  Nothing holds the
+		 * folio to test it for PG_rcu_free: wait regardless.
+		 */
+		if (!res && IS_ENABLED(CONFIG_FOLIO_RCU_FREE))
+			synchronize_rcu();
 		goto unlock_mutex;
 	}
 
@@ -2651,6 +2676,13 @@ try_again:
 
 identify_page_state:
 	res = identify_page_state(pfn, p, page_flags);
+	/*
+	 * The caller may unmap the page once this returns 0.  Lockless
+	 * readers that started before the page got PG_hwpoison, or before a
+	 * split left it in a folio of its own, may still be copying it.
+	 */
+	if (!res && folio_test_rcu_free(folio))
+		synchronize_rcu();
 	mutex_unlock(&mf_mutex);
 	return res;
 unlock_page:
