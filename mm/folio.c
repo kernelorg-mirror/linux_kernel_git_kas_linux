@@ -352,30 +352,36 @@ static void __lru_cache_activate_folio(struct folio *folio)
 
 #ifdef CONFIG_LRU_GEN
 
-static void lru_gen_inc_refs(struct folio *folio)
+/*
+ * Return true if @folio is hot: unevictable, or its flags already held as
+ * many accesses as they can.
+ */
+static bool lru_gen_inc_refs(struct folio *folio)
 {
 	unsigned long new_flags, old_flags = READ_ONCE(*folio_flags(folio, 0));
 	int refs;
 
 	if (folio_test_unevictable(folio))
-		return;
+		return true;
 
 	/* see the comment on LRU_REFS_FLAGS */
 	if (!folio_lru_refs(folio)) {
 		folio_set_lru_refs(folio, 1);
-		return;
+		return false;
 	}
 
 	do {
 		new_flags = old_flags;
 		refs = lru_get_refs_flags(old_flags);
 		if (refs == LRU_REFS_MAX) {
-			if (!folio_test_workingset(folio))
-				folio_set_workingset(folio);
-			return;
+			if (folio_test_workingset(folio))
+				return true;
+			folio_set_workingset(folio);
+			return false;
 		}
 		lru_set_refs_flags(&new_flags, refs + 1);
 	} while (!try_cmpxchg(folio_flags(folio, 0), &old_flags, new_flags));
+	return false;
 }
 
 static bool lru_gen_clear_refs(struct folio *folio)
@@ -399,8 +405,9 @@ static bool lru_gen_clear_refs(struct folio *folio)
 
 #else /* !CONFIG_LRU_GEN */
 
-static void lru_gen_inc_refs(struct folio *folio)
+static bool lru_gen_inc_refs(struct folio *folio)
 {
+	return false;
 }
 
 static bool lru_gen_clear_refs(struct folio *folio)
@@ -422,15 +429,20 @@ static bool lru_gen_clear_refs(struct folio *folio)
  *
  * When a newly allocated folio is not yet visible, so safe for non-atomic ops,
  * __folio_set_referenced() may be substituted for folio_mark_accessed().
+ *
+ * Return: true if @folio is hot: it was already as accessed as the LRU
+ * records.  On the classic LRU that is active or unevictable, referenced
+ * and not idle; on the multi-gen LRU, unevictable, or PG_referenced, all
+ * the refs bits and PG_workingset set.  False for a dropbehind folio.
  */
-void folio_mark_accessed(struct folio *folio)
+bool folio_mark_accessed(struct folio *folio)
 {
+	bool hot = false;
+
 	if (folio_test_dropbehind(folio))
-		return;
-	if (lru_gen_enabled()) {
-		lru_gen_inc_refs(folio);
-		return;
-	}
+		return false;
+	if (lru_gen_enabled())
+		return lru_gen_inc_refs(folio);
 
 	if (!folio_test_referenced(folio)) {
 		folio_set_referenced(folio);
@@ -440,6 +452,7 @@ void folio_mark_accessed(struct folio *folio)
 		 * this list is never rotated or maintained, so marking an
 		 * unevictable page accessed has no effect.
 		 */
+		hot = true;
 	} else if (!folio_test_active(folio)) {
 		/*
 		 * If the folio is on the LRU, queue it for activation via
@@ -453,9 +466,14 @@ void folio_mark_accessed(struct folio *folio)
 			__lru_cache_activate_folio(folio);
 		folio_clear_referenced(folio);
 		workingset_activation(folio);
+	} else {
+		hot = true;
 	}
-	if (folio_test_idle(folio))
+	if (folio_test_idle(folio)) {
 		folio_clear_idle(folio);
+		hot = false;
+	}
+	return hot;
 }
 EXPORT_SYMBOL(folio_mark_accessed);
 
