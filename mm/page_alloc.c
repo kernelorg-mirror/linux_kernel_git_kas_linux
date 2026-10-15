@@ -1346,6 +1346,8 @@ static void rcu_free_pages(struct list_head *list)
 		unsigned int order = page_private(page);
 
 		set_page_private(page, 0);
+		mod_zone_page_state(page_zone(page), NR_FREE_RCU_PAGES,
+				    -(1 << order));
 		free_frozen_pages(page, order);
 		cond_resched_tasks_rcu_qs();
 	}
@@ -1369,12 +1371,14 @@ static void rcu_free_workfn(struct work_struct *work)
 static void rcu_free_defer(struct page *page, unsigned int order)
 {
 	struct rcu_free_pcpu *r = raw_cpu_ptr(&rcu_free_pcpu);
+	struct zone *zone = page_zone(page);
 	unsigned long flags;
 
 	/* For rcu_free_pages(): not every high-order page is compound */
 	set_page_private(page, order);
 
 	spin_lock_irqsave(&r->lock, flags);
+	__mod_zone_page_state(zone, NR_FREE_RCU_PAGES, 1 << order);
 	list_add_tail(&page->lru, &r->pending);
 	rcu_free_start(r);
 	spin_unlock_irqrestore(&r->lock, flags);
