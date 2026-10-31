@@ -24,6 +24,8 @@
 struct mmu_gather;
 struct ptdesc;
 
+#include <asm-generic/pgt-contract.h>
+
 /* Pointers */
 
 /**
