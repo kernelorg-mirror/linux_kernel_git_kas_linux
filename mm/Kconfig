@@ -1489,6 +1489,27 @@ config PT_RECLAIM
 
 	  Note: now only empty user PTE page table pages will be reclaimed.
 
+config PGT
+	def_bool y
+	depends on MMU
+
+config ARCH_HAS_PGT
+	bool
+	help
+	  Selected by architectures that provide <asm/pgt.h>, a native
+	  implementation of the level-generic page table contract.
+
+config PGT_FALLBACK
+	def_bool !ARCH_HAS_PGT
+	depends on PGT
+
+config PGT_128BIT
+	bool
+	depends on PGT && ARCH_SUPPORTS_INT128
+	help
+	  Selected by architectures whose page table entries are 128 bits
+	  wide, such as arm64 with FEAT_D128. pgtval_t is then u128.
+
 config FIND_NORMAL_PAGE
 	def_bool n
 

@@ -199,6 +199,35 @@ PMD before ``pmd_bad()`` for the same reason. It comes after
 entries; on powerpc a software entry carries the leaf bit. The third step
 keeps x86 PROT_NONE PUD leaves, which ``pud_present()`` rejects, out of BAD.
 
+Limits
+------
+
+Where the helpers cannot express something, the fallback does what they
+can:
+
+- Leaves at levels 1 and 2 need ``CONFIG_TRANSPARENT_HUGEPAGE``, and level
+  2 also ``CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD``, for their flag
+  helpers; without them flags read as clear and modifiers do nothing.
+- A flag with no helper at a level reads as clear: user, no-exec,
+  contiguous, global and saved-dirty everywhere (``pte_dirty()`` already
+  counts saved-dirty), soft-dirty above level 1. ``pgt_leaf_exec()`` is
+  therefore true for every leaf on the fallback.
+- ``pgt_leaf_mk()``, ``pgt_leaf_modify()`` and ``pgt_leaf_pgprot()`` above
+  level 0 do what ``pfn_pmd()``, ``pmd_modify()`` and ``pmd_pgprot()`` do.
+  On x86 that means no PAT relocation, and ``pmd_pgprot()`` returns the
+  large-page layout, PSE included (see :doc:`pgt`, Canonical pgprot).
+- ``pgt_none_mk()`` is zero. The helpers can test for the empty entry and
+  clear one, but cannot name it; on s390 the empty entry is not zero.
+- ``pgt_table_mk()`` warns: ``pXd_populate()`` builds and stores a table
+  entry in one step, with side effects such as paravirt pinning. Exchanging
+  in a table entry with ``pgtp_xchg()`` warns too: there is no common
+  setter for a table entry (powerpc has no ``set_pmd()``). Tables are
+  linked with ``pgt_alloc_child()``, which calls ``__pte_alloc()`` and its
+  kin.
+- The TLB macros expand to ``tlb_remove_tlb_entry()``,
+  ``tlb_remove_pmd_tlb_entry()``, ``tlb_remove_pud_tlb_entry()`` and the
+  ``pXd_free_tlb()`` helpers.
+
 s390 root level
 ---------------
 
