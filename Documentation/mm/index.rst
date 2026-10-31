@@ -25,6 +25,8 @@ see the :doc:`admin guide <../admin-guide/mm/index>`.
 
    physical_memory
    page_tables
+   pgt
+   pgt-legacy
    process_addrs
    bootmem
    page_allocation
