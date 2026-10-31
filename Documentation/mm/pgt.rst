@@ -510,6 +510,19 @@ detection. With a constant level the table loads fold to constants when the
 architecture provides the table as ``static const``; with a run-time level
 they are plain loads with no branches.
 
+Each of these derived operations is itself a ``pgt_arch_*()`` entry point
+whose default reads the table: ``pgt_arch_kind()``, ``pgt_arch_pfn()``,
+``pgt_arch_mk()``, ``pgt_arch_modify()``, ``pgt_arch_pgprot()``,
+``pgt_arch_test_flag()``, ``pgt_arch_set_flag()``, ``pgt_arch_clear_flag()``,
+``pgt_arch_next()``, ``pgt_arch_same()``, ``pgt_arch_none_mk()``,
+``pgt_arch_table_entry()``, the softleaf conversions, ``pgt_arch_shift()``,
+``pgt_arch_entry_order()``, ``pgt_arch_can_leaf()``,
+``pgt_arch_can_softleaf()``, ``pgt_arch_root()``, ``pgt_arch_child()``,
+``pgt_arch_addr_end()``, ``pgt_arch_links()``, ``pgt_arch_lockptr()``,
+``pgt_arch_clear()``, ``pgt_arch_clear_bad()``, ``pgt_arch_alloc_child()``
+and ``pgt_arch_leaf_batch()``. A native provider normally leaves them
+alone; the fallback, which has no table, overrides every one.
+
 Some fields are known only at boot on some configurations: on x86 the
 memory encryption bit in table entries and the physical address mask with
 ``CONFIG_X86_MEM_ENCRYPT``. An architecture provides such a table as

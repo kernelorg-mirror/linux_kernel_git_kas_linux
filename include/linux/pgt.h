@@ -22,6 +22,9 @@
 #include <linux/pgt_types.h>
 #include <linux/spinlock_types.h>
 
+/* Without an MMU there is no API, and this header declares nothing */
+#ifdef CONFIG_PGT
+
 struct folio;
 struct mm_struct;
 struct mmu_gather;
@@ -1107,5 +1110,7 @@ unsigned int pgt_leaf_batch(struct folio *folio, pgtp_t p, pgt_leaf_t l,
  */
 #define tlb_remove_pgt_table(tlb, t, addr)				\
 	pgt_arch_tlb_remove_table(tlb, pgtv_from_table(t), addr)
+
+#endif /* CONFIG_PGT */
 
 #endif /* _LINUX_PGT_H */
