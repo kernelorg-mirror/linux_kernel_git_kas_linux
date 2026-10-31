@@ -235,6 +235,12 @@ links the table or frees it. On return ``v`` is a fresh snapshot of ``*p``.
 
 ``pgtp_clear_bad(p)`` reports and clears a BAD entry.
 
+``tlb_remove_pgt_entry(tlb, p, addr)`` records a cleared leaf for the TLB
+flush. ``tlb_remove_pgt_table(tlb, t, addr)`` frees, after the flush, the
+table that the table entry ``t`` linked before the entry was cleared, and
+drops the mm's accounting for it. Both are macros, since they expand to the
+``<asm/tlb.h>`` helpers.
+
 Values
 ------
 
@@ -474,6 +480,8 @@ level-2 entry. ``pgt_iter_ptp()`` is the pointer to the yielded entry.
 ``PGT_ITER_LOCKED`` the iterator holds the level-0 table lock while it
 yields entries of that table, and drops it when it moves to the next
 table; a lock failure makes it walk again from the current address.
+A consumer that leaves the loop before ``pgt_iter_done()`` calls
+``pgt_iter_stop()`` to release what the iterator holds.
 
 
 Architecture contract
