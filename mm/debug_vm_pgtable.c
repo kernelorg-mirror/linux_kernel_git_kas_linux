@@ -31,6 +31,8 @@
 #include <linux/io.h>
 #include <linux/vmalloc.h>
 #include <linux/pgalloc.h>
+#include <linux/pgt.h>
+#include <linux/pgt-walk.h>
 
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
@@ -1269,6 +1271,652 @@ error:
 	return ret;
 }
 
+#ifdef CONFIG_PGT
+/*
+ * Conformance tests for the level-generic page table API: every kind at
+ * every level, agreement with the legacy helpers of the level on
+ * constructed and random values, and the lock protocol on the tables
+ * init_args() built. See Documentation/mm/pgt.rst.
+ */
+static unsigned long pgt_checks __initdata;
+static unsigned long pgt_failures __initdata;
+static unsigned long pgt_gaps __initdata;
+
+static const char * const pgt_kind_name[] __initconst = {
+	[PGT_NONE] = "NONE",
+	[PGT_TABLE] = "TABLE",
+	[PGT_LEAF] = "LEAF",
+	[PGT_SOFTLEAF] = "SOFTLEAF",
+	[PGT_BAD] = "BAD",
+};
+
+#define PGT_CHECK(cond, fmt, ...)					\
+do {									\
+	pgt_checks++;							\
+	if (unlikely(!(cond)) && pgt_failures++ < 32)			\
+		pr_err("pgt: line %d: %s: " fmt "\n", __LINE__, #cond,	\
+		       ##__VA_ARGS__);					\
+} while (0)
+
+/*
+ * A property the contract promises but the fallback cannot give, because
+ * the legacy helpers it mirrors do not: listed in Documentation/mm/pgt.rst.
+ * On the fallback a miss is reported as a gap, not a failure.
+ */
+#define PGT_CHECK_NATIVE(cond, fmt, ...)				\
+do {									\
+	if (!IS_ENABLED(CONFIG_PGT_FALLBACK)) {				\
+		PGT_CHECK(cond, fmt, ##__VA_ARGS__);			\
+	} else if (unlikely(!(cond)) && pgt_gaps++ < 32) {		\
+		pr_info("pgt: fallback gap at line %d: %s: " fmt "\n",	\
+			__LINE__, #cond, ##__VA_ARGS__);		\
+	}								\
+} while (0)
+
+#define PGT_EXPECT_KIND(v, k)						\
+do {									\
+	pgtv_t __v = (v);						\
+	enum pgt_kind __k = pgtv_kind(__v);				\
+									\
+	PGT_CHECK(__k == (k), "lvl %u val %#llx kind %s",		\
+		  __v.lvl, (u64)__v.val, pgt_kind_name[__k]);		\
+} while (0)
+
+/* The bits of a typed value are of its kind */
+#define PGT_EXPECT_LEAF(l)						\
+	PGT_EXPECT_KIND(pgtv_from_leaf(l), PGT_LEAF)
+#define PGT_EXPECT_SOFTLEAF(s)						\
+	PGT_EXPECT_KIND(pgtv_from_softleaf(s), PGT_SOFTLEAF)
+
+/* Descend from the root to @lvl at @addr; the level-0 table is mapped */
+static pgtp_t __init pgt_find(struct mm_struct *mm, unsigned long addr,
+			      unsigned int lvl, pgtp_t *pp)
+{
+	pgtp_t p = pgtp_root(mm, addr);
+	pgtv_t v;
+
+	*pp = PGTP_NULL;
+	while (pgtp_level(p) > lvl) {
+		v = pgtp_get_lockless(p);
+		if (pgtv_kind(v) != PGT_TABLE)
+			return PGTP_NULL;
+		*pp = p;
+		p = pgt_table_child(pgtv_to_table(v), addr);
+	}
+	return p;
+}
+
+static unsigned long __init pgt_level_pfn(struct pgtable_debug_args *args,
+					  unsigned int lvl)
+{
+	switch (lvl) {
+	case 0:
+		return args->fixed_pte_pfn;
+	case 1:
+		return args->fixed_pmd_pfn;
+	default:
+		return args->fixed_pud_pfn;
+	}
+}
+
+/*
+ * Every flag modifier keeps a leaf a leaf, and the flags the level has
+ * read back as set.
+ */
+static void __init pgt_leaf_flag_tests(struct pgtable_debug_args *args,
+				       pgt_leaf_t l)
+{
+	unsigned int lvl = l.v.lvl;
+	bool thp = !lvl || (lvl == 1 && has_transparent_hugepage()) ||
+		   (lvl == 2 && has_transparent_hugepage() &&
+		    has_transparent_pud_hugepage());
+	pgt_leaf_t m;
+
+	m = pgt_leaf_mkwrite(l, args->vma);
+	PGT_EXPECT_LEAF(m);
+	PGT_CHECK(!thp || pgt_leaf_write(m), "lvl %u", lvl);
+	m = pgt_leaf_wrprotect(m);
+	PGT_EXPECT_LEAF(m);
+	PGT_CHECK(!pgt_leaf_write(m), "lvl %u", lvl);
+	m = pgt_leaf_mkdirty(l);
+	PGT_EXPECT_LEAF(m);
+	PGT_CHECK(!thp || pgt_leaf_dirty(m), "lvl %u", lvl);
+	m = pgt_leaf_mkclean(m);
+	PGT_EXPECT_LEAF(m);
+	PGT_CHECK(!pgt_leaf_dirty(m), "lvl %u", lvl);
+	m = pgt_leaf_mkyoung(l);
+	PGT_EXPECT_LEAF(m);
+	PGT_CHECK(!thp || pgt_leaf_young(m), "lvl %u", lvl);
+	m = pgt_leaf_mkold(m);
+	PGT_EXPECT_LEAF(m);
+	PGT_CHECK(!pgt_leaf_young(m), "lvl %u", lvl);
+	PGT_EXPECT_LEAF(pgt_leaf_mkspecial(l));
+	if (lvl < 2 && IS_ENABLED(CONFIG_MEM_SOFT_DIRTY)) {
+		m = pgt_leaf_mksoft_dirty(l);
+		PGT_EXPECT_LEAF(m);
+		PGT_CHECK(!thp || pgt_leaf_soft_dirty(m), "lvl %u", lvl);
+		m = pgt_leaf_clear_soft_dirty(m);
+		PGT_CHECK(!pgt_leaf_soft_dirty(m), "lvl %u", lvl);
+	}
+	if (lvl < 2 && IS_ENABLED(CONFIG_HAVE_ARCH_USERFAULTFD_WP)) {
+		m = pgt_leaf_mkuffd_wp(l);
+		PGT_EXPECT_LEAF(m);
+		PGT_CHECK(!thp || (pgt_leaf_uffd_wp(m) && !pgt_leaf_write(m)),
+			  "lvl %u", lvl);
+		m = pgt_leaf_clear_uffd_wp(m);
+		PGT_CHECK(!pgt_leaf_uffd_wp(m), "lvl %u", lvl);
+	}
+}
+
+static void __init pgt_kind_tests(struct pgtable_debug_args *args)
+{
+	unsigned int lvl, root = pgt_root_level(args->mm);
+	pgt_softleaf_t s;
+	pgt_leaf_t l, m;
+	softleaf_t e;
+	pgtp_t p, pp;
+
+	PGT_CHECK(root == pgtp_level(pgtp_root(args->mm, args->vaddr)),
+		  "root %u", root);
+	/* At the top level of the configuration, the root steps as the PGD */
+	if (root == PGT_MAX_LEVEL) {
+		unsigned long end;
+
+		p = pgtp_root(args->mm, args->vaddr);
+		end = args->vaddr + 2 * pgtp_size(p);
+		PGT_CHECK((unsigned long)pgtp_ptr(pgtp_next(p)) -
+			  (unsigned long)pgtp_ptr(p) == sizeof(pgd_t), "");
+		PGT_CHECK(pgtp_addr_end(p, args->vaddr, end) ==
+			  pgd_addr_end(args->vaddr, end), "%#lx", args->vaddr);
+	}
+	for (lvl = 0; lvl <= root; lvl++)
+		PGT_EXPECT_KIND(pgt_none_mk(lvl), PGT_NONE);
+
+	/* init_args() linked a table at every level above 0 */
+	for (lvl = root; lvl >= 1; lvl--) {
+		p = pgt_find(args->mm, args->vaddr, lvl, &pp);
+		PGT_CHECK(!pgtp_is_null(p), "lvl %u", lvl);
+		if (!pgtp_is_null(p))
+			PGT_EXPECT_KIND(pgtp_get_lockless(p), PGT_TABLE);
+	}
+
+	for (lvl = 0; lvl <= min(2, PGT_MAX_LEVEL); lvl++) {
+		if (!pgt_arch_can_leaf(lvl))
+			continue;
+		if (lvl == 1 && !has_transparent_hugepage())
+			continue;
+		if (lvl == 2 && !(has_transparent_hugepage() &&
+				      has_transparent_pud_hugepage()))
+			continue;
+		l = pgt_leaf_mk(pgt_level_pfn(args, lvl), args->page_prot, lvl);
+		PGT_EXPECT_LEAF(l);
+		PGT_CHECK(pgt_leaf_pfn(l) == pgt_level_pfn(args, lvl),
+			  "lvl %u", lvl);
+		PGT_CHECK(pgt_leaf_shift(l) == pgt_arch_shift(lvl), "lvl %u",
+			  lvl);
+		PGT_CHECK_NATIVE(pgprot_val(pgt_leaf_pgprot(l)) ==
+				 pgprot_val(args->page_prot),
+				 "lvl %u %#llx %#llx", lvl,
+				 (u64)pgprot_val(pgt_leaf_pgprot(l)),
+				 (u64)pgprot_val(args->page_prot));
+		pgt_leaf_flag_tests(args, l);
+
+		/* PROT_NONE is a leaf the hardware cannot use */
+		m = pgt_leaf_modify(l, args->page_prot_none);
+		PGT_EXPECT_LEAF(m);
+		if (IS_ENABLED(CONFIG_ARCH_HAS_PTE_PROTNONE) && lvl < 2)
+			PGT_CHECK(!pgt_leaf_accessible(m, false), "lvl %u",
+				  lvl);
+		PGT_CHECK(pgt_leaf_pfn(m) == pgt_level_pfn(args, lvl),
+			  "lvl %u", lvl);
+	}
+
+	/* Software entries */
+	PGT_EXPECT_SOFTLEAF(pgt_softleaf_mk(args->swp_entry, 0));
+	e = make_readable_migration_entry(args->fixed_pte_pfn);
+	PGT_EXPECT_SOFTLEAF(pgt_softleaf_mk(e, 0));
+	e = make_writable_migration_entry(args->fixed_pte_pfn);
+	s = pgt_softleaf_mk(e, 0);
+	PGT_EXPECT_SOFTLEAF(s);
+	PGT_CHECK(softleaf_from_pgt(s).val == e.val, "%#lx", e.val);
+	e = make_pte_marker_entry(PTE_MARKER_GUARD);
+	PGT_EXPECT_SOFTLEAF(pgt_softleaf_mk(e, 0));
+	if (IS_ENABLED(CONFIG_MEM_SOFT_DIRTY)) {
+		s = pgt_softleaf_mk(args->swp_entry, 0);
+		s = pgt_softleaf_mksoft_dirty(s);
+		PGT_EXPECT_SOFTLEAF(s);
+		PGT_CHECK(pgt_softleaf_soft_dirty(s), "");
+		PGT_CHECK(softleaf_from_pgt(s).val == args->swp_entry.val, "");
+	}
+	if (pgt_arch_can_softleaf(1)) {
+		e = make_readable_migration_entry(args->fixed_pmd_pfn);
+		PGT_EXPECT_SOFTLEAF(pgt_softleaf_mk(e, 1));
+		e = make_writable_migration_entry(args->fixed_pmd_pfn);
+		s = pgt_softleaf_mk(e, 1);
+		PGT_EXPECT_SOFTLEAF(s);
+		PGT_CHECK(softleaf_from_pgt(s).val == e.val, "%#lx", e.val);
+	}
+}
+
+/*
+ * pgt agrees with the legacy helpers of the level. On the fallback this
+ * checks the level mapping and the classification order; on a native
+ * implementation it checks the format table.
+ */
+static void __init pgt_legacy_check(pgtv_t v)
+{
+	enum pgt_kind k = pgtv_kind(v);
+
+	if (!pgt_arch_can_leaf(v.lvl))
+		PGT_CHECK(k != PGT_LEAF, "lvl %u val %#llx", v.lvl,
+			  (u64)v.val);
+
+	switch (v.lvl) {
+	case 0: {
+		pte_t pte = __pte(v.val);
+
+		PGT_CHECK((k == PGT_NONE) == !!pte_none(pte), "%#llx",
+			  (u64)v.val);
+		if (k == PGT_NONE)
+			break;
+		PGT_CHECK((k == PGT_LEAF) == !!pte_present(pte), "%#llx",
+			  (u64)v.val);
+		PGT_CHECK(k == PGT_LEAF || k == PGT_SOFTLEAF, "%#llx",
+			  (u64)v.val);
+		if (k == PGT_LEAF) {
+			pgt_leaf_t l = pgtv_to_leaf(v);
+
+			PGT_CHECK(pgt_leaf_pfn(l) == pte_pfn(pte), "%#llx",
+				  (u64)v.val);
+			PGT_CHECK(pgt_leaf_write(l) == !!pte_write(pte), "");
+			PGT_CHECK(pgt_leaf_dirty(l) == !!pte_dirty(pte), "");
+			PGT_CHECK(pgt_leaf_young(l) == !!pte_young(pte), "");
+			PGT_CHECK(pgt_leaf_special(l) == !!pte_special(pte),
+				  "");
+			PGT_CHECK(pgt_leaf_soft_dirty(l) ==
+				  !!pte_soft_dirty(pte), "");
+			PGT_CHECK(pgt_leaf_uffd_wp(l) == !!pte_uffd(pte), "");
+		} else {
+			pgt_softleaf_t s = pgtv_to_softleaf(v);
+
+			PGT_CHECK(softleaf_from_pgt(s).val ==
+				  softleaf_from_pte(pte).val, "%#llx",
+				  (u64)v.val);
+			PGT_CHECK(pgt_softleaf_soft_dirty(s) ==
+				  !!pte_swp_soft_dirty(pte), "");
+			PGT_CHECK(pgt_softleaf_uffd_wp(s) ==
+				  !!pte_swp_uffd(pte), "");
+		}
+		break;
+	}
+	case 1: {
+		pmd_t pmd = __pmd(v.val);
+
+		PGT_CHECK((k == PGT_NONE) == !!pmd_none(pmd), "%#llx",
+			  (u64)v.val);
+		if (k == PGT_NONE)
+			break;
+		if (pmd_present(pmd)) {
+			PGT_CHECK((k == PGT_LEAF) == !!pmd_leaf(pmd), "%#llx",
+				  (u64)v.val);
+			if (!pmd_leaf(pmd))
+				PGT_CHECK((k == PGT_BAD) == !!pmd_bad(pmd),
+					  "%#llx", (u64)v.val);
+		} else {
+			PGT_CHECK(k == (pgt_arch_can_softleaf(1) ?
+					PGT_SOFTLEAF : pmd_leaf(pmd) ?
+					PGT_LEAF : PGT_BAD),
+				  "%#llx", (u64)v.val);
+		}
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+		if (k == PGT_LEAF) {
+			pgt_leaf_t l = pgtv_to_leaf(v);
+
+			PGT_CHECK(pgt_leaf_pfn(l) == pmd_pfn(pmd), "%#llx",
+				  (u64)v.val);
+			PGT_CHECK(pgt_leaf_write(l) == !!pmd_write(pmd), "");
+			PGT_CHECK(pgt_leaf_dirty(l) == !!pmd_dirty(pmd), "");
+			PGT_CHECK(pgt_leaf_young(l) == !!pmd_young(pmd), "");
+			PGT_CHECK(pgt_leaf_soft_dirty(l) ==
+				  !!pmd_soft_dirty(pmd), "");
+		}
+#endif
+		break;
+	}
+#if CONFIG_PGTABLE_LEVELS > 2
+	case 2: {
+		pud_t pud = __pud(v.val);
+
+		PGT_CHECK((k == PGT_NONE) == !!pud_none(pud), "%#llx",
+			  (u64)v.val);
+		if (k == PGT_NONE)
+			break;
+		if (pud_present(pud)) {
+			PGT_CHECK((k == PGT_LEAF) == !!pud_leaf(pud), "%#llx",
+				  (u64)v.val);
+			if (!pud_leaf(pud))
+				PGT_CHECK((k == PGT_BAD) == !!pud_bad(pud),
+					  "%#llx", (u64)v.val);
+		} else {
+			PGT_CHECK(k == (pud_leaf(pud) ? PGT_LEAF : PGT_BAD),
+				  "%#llx", (u64)v.val);
+		}
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE) && \
+	defined(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD)
+		if (k == PGT_LEAF) {
+			pgt_leaf_t l = pgtv_to_leaf(v);
+
+			PGT_CHECK(pgt_leaf_pfn(l) == pud_pfn(pud), "%#llx",
+				  (u64)v.val);
+			PGT_CHECK(pgt_leaf_write(l) == !!pud_write(pud), "");
+			PGT_CHECK(pgt_leaf_dirty(l) == !!pud_dirty(pud), "");
+			PGT_CHECK(pgt_leaf_young(l) == !!pud_young(pud), "");
+		}
+#endif
+		break;
+	}
+#endif
+#if CONFIG_PGTABLE_LEVELS > 3
+	case 3: {
+		p4d_t p4d = __p4d(v.val);
+
+		PGT_CHECK((k == PGT_NONE) == !!p4d_none(p4d), "%#llx",
+			  (u64)v.val);
+		if (k != PGT_NONE && p4d_present(p4d) && !p4d_leaf(p4d))
+			PGT_CHECK((k == PGT_BAD) == !!p4d_bad(p4d), "%#llx",
+				  (u64)v.val);
+		break;
+	}
+#endif
+#if CONFIG_PGTABLE_LEVELS > 4
+	case 4: {
+		pgd_t pgd = __pgd(v.val);
+
+		PGT_CHECK((k == PGT_NONE) == !!pgd_none(pgd), "%#llx",
+			  (u64)v.val);
+		if (k != PGT_NONE && pgd_present(pgd) && !pgd_leaf(pgd))
+			PGT_CHECK((k == PGT_BAD) == !!pgd_bad(pgd), "%#llx",
+				  (u64)v.val);
+		break;
+	}
+#endif
+	default:
+		break;
+	}
+}
+
+static void __init pgt_legacy_tests(struct pgtable_debug_args *args)
+{
+	unsigned int lvl, i, root = pgt_root_level(args->mm);
+	pgt_softleaf_t s;
+	pgt_leaf_t l, m;
+	pgtp_t p, pp;
+	pte_t pte;
+
+	/* pgt_leaf_mk() builds what the legacy constructors build */
+	l = pgt_leaf_mk(args->fixed_pte_pfn, args->page_prot, 0);
+	pte = pfn_pte(args->fixed_pte_pfn, args->page_prot);
+	PGT_CHECK(l.v.val == pte_val(pte), "");
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	if (has_transparent_hugepage()) {
+		pmd_t pmd = pfn_pmd(args->fixed_pmd_pfn, args->page_prot);
+
+		l = pgt_leaf_mk(args->fixed_pmd_pfn, args->page_prot, 1);
+		PGT_CHECK(l.v.val == pmd_val(pmd_mkhuge(pmd)), "");
+	}
+#endif
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE) && \
+	defined(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD)
+	if (has_transparent_pud_hugepage()) {
+		pud_t pud = pfn_pud(args->fixed_pud_pfn, args->page_prot);
+
+		l = pgt_leaf_mk(args->fixed_pud_pfn, args->page_prot, 2);
+		PGT_CHECK(l.v.val == pud_val(pud_mkhuge(pud)), "");
+	}
+#endif
+
+	/* Constructed values */
+	for (lvl = 0; lvl <= root; lvl++) {
+		pgt_legacy_check(pgt_none_mk(lvl));
+		if (!lvl)
+			continue;
+		p = pgt_find(args->mm, args->vaddr, lvl, &pp);
+		if (!pgtp_is_null(p))
+			pgt_legacy_check(pgtp_get_lockless(p));
+	}
+	for (lvl = 0; lvl <= min(2, PGT_MAX_LEVEL); lvl++) {
+		if (!pgt_arch_can_leaf(lvl) ||
+		    (lvl == 1 && !has_transparent_hugepage()) ||
+		    (lvl == 2 && !(has_transparent_hugepage() &&
+				      has_transparent_pud_hugepage())))
+			continue;
+		l = pgt_leaf_mk(pgt_level_pfn(args, lvl), args->page_prot, lvl);
+		pgt_legacy_check(pgtv_from_leaf(l));
+		m = pgt_leaf_modify(l, args->page_prot_none);
+		pgt_legacy_check(pgtv_from_leaf(m));
+		m = pgt_leaf_wrprotect(pgt_leaf_mkdirty(l));
+		pgt_legacy_check(pgtv_from_leaf(m));
+		m = pgt_leaf_mkwrite(pgt_leaf_mkold(l), args->vma);
+		pgt_legacy_check(pgtv_from_leaf(m));
+	}
+	s = pgt_softleaf_mk(args->swp_entry, 0);
+	pgt_legacy_check(pgtv_from_softleaf(s));
+	s = pgt_softleaf_mk(args->leaf_entry, 0);
+	pgt_legacy_check(pgtv_from_softleaf(s));
+	if (pgt_arch_can_softleaf(1)) {
+		s = pgt_softleaf_mk(args->leaf_entry, 1);
+		pgt_legacy_check(pgtv_from_softleaf(s));
+	}
+
+	/* Random values */
+	for (lvl = 0; lvl <= root; lvl++) {
+		for (i = 0; i < 4096; i++) {
+			pgtv_t r = { .val = (pgtval_t)get_random_u64(),
+				     .lvl = lvl };
+
+			pgt_legacy_check(r);
+		}
+	}
+}
+
+/*
+ * Install a leaf in the empty level-1 entry next to the one init_args()
+ * populated, invalidate it, and clear it again.
+ */
+static void __init pgt_invalidate_tests(struct pgtable_debug_args *args)
+{
+	unsigned long vaddr = (args->vaddr & PMD_MASK) ^ PMD_SIZE;
+	pgt_leaf_t l, old;
+	spinlock_t *ptl;
+	pgtp_t p, pp;
+	pgtv_t v;
+
+	if (!has_transparent_hugepage() || args->pmd_pfn == ULONG_MAX)
+		return;
+	p = pgt_find(args->mm, vaddr, 1, &pp);
+	if (pgtp_is_null(p) || pgtv_kind(pgtp_get_lockless(p)) != PGT_NONE)
+		return;
+	ptl = pgtp_lock_entry(args->mm, p);
+	l = pgt_leaf_mk(args->pmd_pfn, args->page_prot, 1);
+	pgtp_set_leaf(args->mm, vaddr, p, l);
+	v = pgtp_get(p);
+	PGT_EXPECT_KIND(v, PGT_LEAF);
+	PGT_CHECK(pgt_leaf_accessible(pgtv_to_leaf(v), false), "%#llx",
+		  (u64)v.val);
+	old = pgtp_invalidate(args->vma, vaddr, p);
+	PGT_CHECK(pgtv_same(pgtv_from_leaf(old), pgtv_from_leaf(l)),
+		  "%#llx %#llx", (u64)old.v.val, (u64)l.v.val);
+	v = pgtp_get(p);
+	PGT_EXPECT_KIND(v, PGT_LEAF);
+	l = pgtv_to_leaf(v);
+	PGT_CHECK(!pgt_leaf_accessible(l, false), "%#llx", (u64)v.val);
+	PGT_CHECK(pgt_leaf_pfn(l) == args->pmd_pfn, "%#lx", pgt_leaf_pfn(l));
+	v = pgtp_xchg(args->mm, vaddr, p, pgt_none_mk(1));
+	PGT_EXPECT_KIND(v, PGT_LEAF);
+	PGT_EXPECT_KIND(pgtp_get(p), PGT_NONE);
+	pgtp_unlock(p, ptl);
+}
+
+/*
+ * Every level locks. A level-0 table locks with the right parent and is
+ * refused under one that does not link it: the neighbouring entry in the
+ * parent's table.
+ */
+static void __init pgt_lock_tests(struct pgtable_debug_args *args)
+{
+	unsigned int lvl, root = pgt_root_level(args->mm);
+	unsigned long addr = args->vaddr, other;
+	pgtp_t p, pp, q, qp;
+	spinlock_t *ptl;
+	pgtv_t v;
+
+	for (lvl = 0; lvl <= root; lvl++) {
+		p = pgt_find(args->mm, addr, lvl, &pp);
+		if (pgtp_is_null(p))
+			continue;
+		ptl = lvl ? pgtp_lock_entry(args->mm, p) :
+			    pgtp_lock_table(args->mm, p, pp);
+		PGT_CHECK(ptl, "lvl %u", lvl);
+		if (!ptl)
+			continue;
+		pgtp_assert_locked(args->mm, p);
+		PGT_CHECK(pgtv_same(pgtp_get(p), pgtp_get_lockless(p)),
+			  "lvl %u", lvl);
+		pgtp_unlock(p, ptl);
+		if (lvl)
+			continue;
+
+		/* An address that differs only in the parent's index */
+		other = addr ^ (1UL << pgt_arch_shift(lvl + 1));
+		q = pgt_find(args->mm, other, lvl + 1, &qp);
+		if (pgtp_is_null(q) || pgtp_ptr(q) == pgtp_ptr(pp))
+			continue;
+		p = pgt_find(args->mm, addr, lvl, &pp);
+		ptl = pgtp_lock_table(args->mm, p, q);
+		PGT_CHECK(!ptl, "lvl %u", lvl);
+		if (ptl)
+			pgtp_unlock(p, ptl);
+	}
+
+	p = pgt_find(args->mm, addr, 0, &pp);
+	PGT_CHECK(!pgtp_is_null(p) && pgtp_map(p, pp), "");
+	if (!pgtp_is_null(p))
+		pgtp_unmap(p);
+
+	/* Link a level-0 table at the neighbouring level-1 entry and undo it */
+	other = addr ^ PMD_SIZE;
+	p = pgt_find(args->mm, other, 1, &pp);
+	if (pgtp_is_null(p) || pgtv_kind(pgtp_get_lockless(p)) != PGT_NONE)
+		return;
+	PGT_CHECK(!pgt_alloc_child(args->mm, p, &v), "");
+	PGT_EXPECT_KIND(v, PGT_TABLE);
+	PGT_CHECK(!pgt_alloc_child(args->mm, p, &v), "");
+	PGT_EXPECT_KIND(v, PGT_TABLE);
+	ptl = pgtp_lock_entry(args->mm, p);
+	v = pgtp_xchg(args->mm, other, p, pgt_none_mk(1));
+	pgtp_unlock(p, ptl);
+	PGT_EXPECT_KIND(v, PGT_TABLE);
+	pte_free(args->mm, pmd_pgtable(__pmd(v.val)));
+	mm_dec_nr_ptes(args->mm);
+}
+
+struct pgt_count {
+	struct mm_struct *mm;
+	unsigned long entries, bytes;
+};
+
+PGT_DEFINE_LEVEL_WALKER(pgt_count_walk, pgt_count_body, struct pgt_count *);
+
+static __always_inline unsigned long
+pgt_count_body(struct pgt_count *c, pgtp_t p, pgtp_t pp, unsigned long addr,
+	       unsigned long end, const unsigned int lvl)
+{
+	unsigned long next, ret;
+	spinlock_t *ptl = NULL;
+	pgtp_t first = p, child;
+	pgtv_t v;
+
+	if (!lvl) {
+		ptl = pgtp_lock_table(c->mm, p, pp);
+		if (!ptl)
+			return addr;
+	}
+	do {
+		next = pgtp_addr_end(p, addr, end);
+		v = lvl ? pgtp_get_lockless(p) : pgtp_get(p);
+		if (lvl && pgtv_kind(v) == PGT_TABLE) {
+			child = pgt_table_child(pgtv_to_table(v), addr);
+			ret = pgt_count_walk(c, child, p, addr, next, lvl - 1);
+			if (ret != next)
+				return ret;
+		} else {
+			c->entries++;
+			c->bytes += next - addr;
+		}
+	} while (p = pgtp_next(p), addr = next, addr != end);
+	if (ptl)
+		pgtp_unlock(first, ptl);
+	return end;
+}
+
+/*
+ * The iterator, in both modes, and a level walker see the same entries
+ * over the range of the level-2 entry init_args() populated.
+ */
+static void __init pgt_walk_tests(struct pgtable_debug_args *args)
+{
+	unsigned long start, end, n, bytes;
+	struct pgt_count c = { .mm = args->mm };
+	unsigned int mode;
+	pgtp_t root;
+	pgtv_t v;
+
+	if (PGT_MAX_LEVEL < 2)
+		return;
+	start = args->vaddr & PUD_MASK;
+	end = start + PUD_SIZE;
+
+	for (mode = 0; mode < 2; mode++) {
+		PGT_ITER(it, args->mm, start, end,
+			 mode ? PGT_ITER_LOCKED : PGT_ITER_RO);
+
+		n = 0;
+		bytes = 0;
+		for (v = pgt_iter_first(&it); !pgt_iter_done(&it);
+		     v = pgt_iter_next(&it)) {
+			PGT_CHECK(pgtv_kind(v) != PGT_TABLE, "");
+			PGT_CHECK(v.lvl == pgtp_level(pgt_iter_ptp(&it)), "");
+			n++;
+			bytes += pgt_iter_size(&it);
+		}
+		PGT_CHECK(n == PTRS_PER_PTE + PTRS_PER_PMD - 1, "mode %u n %lu",
+			  mode, n);
+		PGT_CHECK(bytes == PUD_SIZE, "mode %u bytes %#lx", mode, bytes);
+	}
+
+	root = pgtp_root(args->mm, start);
+	PGT_CHECK(pgt_count_walk(&c, root, PGTP_NULL, start, end,
+				 pgtp_level(root)) == end, "");
+	PGT_CHECK(c.entries == PTRS_PER_PTE + PTRS_PER_PMD - 1, "%lu",
+		  c.entries);
+	PGT_CHECK(c.bytes == PUD_SIZE, "%#lx", c.bytes);
+}
+
+static void __init pgt_tests(struct pgtable_debug_args *args)
+{
+	pr_info("Validating level-generic page table API\n");
+	pgt_kind_tests(args);
+	pgt_legacy_tests(args);
+	pgt_invalidate_tests(args);
+	pgt_lock_tests(args);
+	pgt_walk_tests(args);
+	pr_info("pgt: %lu checks, %lu failures, %lu fallback gaps\n",
+		pgt_checks, pgt_failures, pgt_gaps);
+}
+#else  /* !CONFIG_PGT */
+static void __init pgt_tests(struct pgtable_debug_args *args) { }
+#endif /* CONFIG_PGT */
+
 static int __init debug_vm_pgtable(void)
 {
 	struct pgtable_debug_args args;
@@ -1332,6 +1980,8 @@ static int __init debug_vm_pgtable(void)
 	pud_thp_tests(&args);
 
 	hugetlb_basic_tests(&args);
+
+	pgt_tests(&args);
 
 	/*
 	 * Page table modifying tests. They need to hold
