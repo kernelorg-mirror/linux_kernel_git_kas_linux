@@ -3,8 +3,8 @@
  * Level-generic page table API: the architecture contract.
  *
  * An implementation of the contract ("provider") is either native,
- * <asm/pgt.h> with CONFIG_PGT_NATIVE, or the fallback,
- * <asm-generic/pgt-fallback.h>, which every architecture gets.
+ * <asm/pgt.h>, or the fallback, <asm-generic/pgt-fallback.h>, which every
+ * architecture gets. CONFIG_PGT_FALLBACK selects the fallback.
  *
  * The contract is the set of pgt_arch_*() entry points below. A native
  * provider describes its entry format in a struct pgt_fmt table; the
@@ -19,6 +19,10 @@
  * constant, and it only folds away once the entry point is inlined.
  *
  * Only this header and the providers read pgtv_t.val.
+ *
+ * A provider makes pgprot_t and softleaf_t visible: the consumer API uses
+ * them after including it, and <linux/pgt.h> does not include anything that
+ * defines them.
  */
 #ifndef _ASM_GENERIC_PGT_CONTRACT_H
 #define _ASM_GENERIC_PGT_CONTRACT_H
@@ -134,10 +138,10 @@ struct pgt_fmt {
 	pgtval_t softleaf_mbz;
 };
 
-#if defined(CONFIG_PGT_NATIVE) && !defined(CONFIG_PGT_FORCE_FALLBACK)
-#include <asm/pgt.h>
-#else
+#ifdef CONFIG_PGT_FALLBACK
 #include <asm-generic/pgt-fallback.h>
+#else
+#include <asm/pgt.h>
 #endif
 
 /*
@@ -454,6 +458,78 @@ static __always_inline struct ptdesc *pgt_arch_withdraw(struct mm_struct *mm,
  * fallback overrides all of them.
  */
 
+#ifndef pgt_arch_root
+/**
+ * pgt_arch_root() - Root entry for an address.
+ * @mm: the mm.
+ * @addr: user address.
+ *
+ * Default: pgt_arch_root_table() indexed at pgt_arch_root_level().
+ *
+ * Return: pointer to the root entry.
+ */
+static __always_inline pgtp_t pgt_arch_root(struct mm_struct *mm,
+					    unsigned long addr);
+#endif
+
+#ifndef pgt_arch_entry_order
+/**
+ * pgt_arch_entry_order() - Size of an entry of a level, as a shift.
+ * @lvl: level.
+ *
+ * Return: log2 of the entry size in bytes.
+ */
+static __always_inline unsigned int pgt_arch_entry_order(unsigned int lvl);
+#endif
+
+#ifndef pgt_arch_links
+/**
+ * pgt_arch_links() - Check that a TABLE value links the table of an entry.
+ * @v: TABLE snapshot of an entry.
+ * @p: entry pointer one level below @v.
+ *
+ * Return: true if @v links the table that contains @p.
+ */
+static __always_inline bool pgt_arch_links(pgtv_t v, pgtp_t p);
+#endif
+
+#ifndef pgt_arch_clear
+/**
+ * pgt_arch_clear() - Empty an entry.
+ * @mm: the mm.
+ * @addr: address the entry maps.
+ * @ptr: entry address.
+ * @lvl: level of the entry.
+ *
+ * Default: store the level's none_val.
+ */
+static __always_inline void pgt_arch_clear(struct mm_struct *mm,
+					   unsigned long addr, void *ptr,
+					   unsigned int lvl);
+#endif
+
+#ifndef pgt_arch_clear_bad
+/**
+ * pgt_arch_clear_bad() - Report and empty a BAD entry.
+ * @p: entry pointer at level 1 or above.
+ */
+static __always_inline void pgt_arch_clear_bad(pgtp_t p);
+#endif
+
+#ifndef pgt_arch_alloc_child
+/**
+ * pgt_arch_alloc_child() - Link a new table below an entry if it is empty.
+ * @mm: the mm.
+ * @p: entry pointer at level 1 or above.
+ *
+ * Default: pgt_arch_table_alloc(), then under the lock of @p
+ * pgt_arch_populate() if *@p is NONE, pgt_arch_table_free() otherwise.
+ *
+ * Return: 0, or -ENOMEM.
+ */
+int pgt_arch_alloc_child(struct mm_struct *mm, pgtp_t p);
+#endif
+
 #ifndef pgt_arch_kind
 /**
  * pgt_arch_kind() - Classify a value.
@@ -538,37 +614,37 @@ static __always_inline pgtv_t pgt_arch_modify(pgtv_t v, pgprot_t prot);
 static __always_inline pgprot_t pgt_arch_pgprot(pgtv_t v);
 #endif
 
-#ifndef pgt_arch_test
+#ifndef pgt_arch_test_flag
 /**
- * pgt_arch_test() - Test a flag.
+ * pgt_arch_test_flag() - Test a flag.
  * @v: LEAF or SOFTLEAF value.
  * @f: flag.
  *
  * Return: true if @f is set; false if the level lacks it.
  */
-static __always_inline bool pgt_arch_test(pgtv_t v, enum pgt_flag f);
+static __always_inline bool pgt_arch_test_flag(pgtv_t v, enum pgt_flag f);
 #endif
 
-#ifndef pgt_arch_set
+#ifndef pgt_arch_set_flag
 /**
- * pgt_arch_set() - Set a flag.
+ * pgt_arch_set_flag() - Set a flag.
  * @v: LEAF or SOFTLEAF value.
  * @f: flag.
  *
  * Return: the modified value; @v if the level lacks @f.
  */
-static __always_inline pgtv_t pgt_arch_set(pgtv_t v, enum pgt_flag f);
+static __always_inline pgtv_t pgt_arch_set_flag(pgtv_t v, enum pgt_flag f);
 #endif
 
-#ifndef pgt_arch_clear
+#ifndef pgt_arch_clear_flag
 /**
- * pgt_arch_clear() - Clear a flag.
+ * pgt_arch_clear_flag() - Clear a flag.
  * @v: LEAF or SOFTLEAF value.
  * @f: flag.
  *
  * Return: the modified value.
  */
-static __always_inline pgtv_t pgt_arch_clear(pgtv_t v, enum pgt_flag f);
+static __always_inline pgtv_t pgt_arch_clear_flag(pgtv_t v, enum pgt_flag f);
 #endif
 
 #ifndef pgt_arch_next
@@ -619,10 +695,11 @@ static __always_inline pgtv_t pgt_arch_none_mk(unsigned int lvl);
 
 #ifndef pgt_arch_to_softleaf
 /**
- * pgt_arch_to_softleaf() - Decode a SOFTLEAF value.
- * @v: SOFTLEAF value.
+ * pgt_arch_to_softleaf() - Decode a software entry.
+ * @v: value.
  *
- * Return: the software entry.
+ * Return: the software entry of a SOFTLEAF value, the empty one
+ * (softleaf_mk_none()) for any other kind.
  */
 static __always_inline softleaf_t pgt_arch_to_softleaf(pgtv_t v);
 #endif
@@ -694,5 +771,17 @@ static __always_inline spinlock_t *pgt_arch_lockptr(struct mm_struct *mm,
 unsigned int pgt_arch_leaf_batch(struct folio *folio, pgtp_t p, pgtv_t v,
 				 unsigned int max_nr);
 #endif
+
+/*
+ * The TLB entry points are macros, since they expand to the <asm/tlb.h>
+ * helpers, and have no generic default:
+ *
+ * pgt_arch_tlb_remove_entry(tlb, p, addr) records the leaf cleared at @p
+ * for the TLB flush.
+ *
+ * pgt_arch_tlb_remove_table(tlb, v, addr) frees, after the TLB flush, the
+ * table that the TABLE value @v linked, and drops the mm's accounting for
+ * it.
+ */
 
 #endif /* _ASM_GENERIC_PGT_CONTRACT_H */
