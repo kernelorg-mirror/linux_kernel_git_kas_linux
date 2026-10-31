@@ -75,6 +75,7 @@ ifdef CONFIG_MMU
 	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 endif
 
+obj-$(CONFIG_PGT)		+= pgt.o
 obj-$(CONFIG_PGT_FALLBACK)	+= pgt-fallback.o
 
 obj-$(CONFIG_SWAP)	+= page_io.o swap_state.o swapfile.o

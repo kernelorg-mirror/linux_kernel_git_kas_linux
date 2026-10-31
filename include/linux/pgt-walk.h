@@ -145,6 +145,15 @@ pgtv_t pgt_iter_next(struct pgt_iter *it);
 bool pgt_iter_done(struct pgt_iter *it);
 
 /**
+ * pgt_iter_stop() - End a walk before pgt_iter_done().
+ * @it: the iterator.
+ *
+ * Releases what the iterator holds. Needed only when leaving the loop
+ * early.
+ */
+void pgt_iter_stop(struct pgt_iter *it);
+
+/**
  * pgt_iter_addr() - Address of the current entry.
  * @it: the iterator.
  *
