@@ -17,14 +17,16 @@
 #ifndef _LINUX_PGT_H
 #define _LINUX_PGT_H
 
+#include <linux/build_bug.h>
+#include <linux/mmdebug.h>
 #include <linux/pgt_types.h>
-#include <linux/pgtable.h>
 #include <linux/spinlock_types.h>
 
+struct folio;
+struct mm_struct;
 struct mmu_gather;
 struct ptdesc;
-
-#include <asm-generic/pgt-contract.h>
+struct vm_area_struct;
 
 /* Pointers */
 
@@ -35,7 +37,10 @@ struct ptdesc;
  *
  * Return: the entry pointer.
  */
-static __always_inline pgtp_t pgtp_make(void *ptr, unsigned int lvl);
+static __always_inline pgtp_t pgtp_make(void *ptr, unsigned int lvl)
+{
+	return (pgtp_t){ .ptr = ptr, .lvl = lvl };
+}
 
 /**
  * pgtp_level() - Level of the table an entry pointer points into.
@@ -43,7 +48,10 @@ static __always_inline pgtp_t pgtp_make(void *ptr, unsigned int lvl);
  *
  * Return: the level.
  */
-static __always_inline unsigned int pgtp_level(pgtp_t p);
+static __always_inline unsigned int pgtp_level(pgtp_t p)
+{
+	return p.lvl;
+}
 
 /**
  * pgtp_assume_level() - Tell the compiler the level of an entry pointer.
@@ -54,7 +62,14 @@ static __always_inline unsigned int pgtp_level(pgtp_t p);
  * constant states it here, and the operations then compile for that level
  * alone. With CONFIG_DEBUG_VM the claim is checked rather than assumed.
  */
-static __always_inline void pgtp_assume_level(pgtp_t p, unsigned int lvl);
+static __always_inline void pgtp_assume_level(pgtp_t p, unsigned int lvl)
+{
+	if (IS_ENABLED(CONFIG_DEBUG_VM)) {
+		VM_WARN_ON_ONCE(pgtp_level(p) != lvl);
+		return;
+	}
+	__assume(p.lvl == lvl);
+}
 
 /**
  * pgtp_ptr() - Address of an entry.
@@ -62,7 +77,10 @@ static __always_inline void pgtp_assume_level(pgtp_t p, unsigned int lvl);
  *
  * Return: the entry address.
  */
-static __always_inline void *pgtp_ptr(pgtp_t p);
+static __always_inline void *pgtp_ptr(pgtp_t p)
+{
+	return p.ptr;
+}
 
 /**
  * pgtp_is_null() - Check for PGTP_NULL.
@@ -70,7 +88,10 @@ static __always_inline void *pgtp_ptr(pgtp_t p);
  *
  * Return: true if @p is PGTP_NULL.
  */
-static __always_inline bool pgtp_is_null(pgtp_t p);
+static __always_inline bool pgtp_is_null(pgtp_t p)
+{
+	return !p.ptr;
+}
 
 /**
  * pgtp_table() - Table that contains an entry.
@@ -80,13 +101,18 @@ static __always_inline bool pgtp_is_null(pgtp_t p);
  */
 struct ptdesc *pgtp_table(pgtp_t p);
 
+#include <asm-generic/pgt-contract.h>
+
 /**
  * pgt_root_level() - Level of the root table of an mm.
  * @mm: the mm.
  *
  * Return: the root level; at most PGT_MAX_LEVEL.
  */
-static __always_inline unsigned int pgt_root_level(struct mm_struct *mm);
+static __always_inline unsigned int pgt_root_level(struct mm_struct *mm)
+{
+	return pgt_arch_root_level(mm);
+}
 
 /**
  * pgtp_root() - Root entry for an address.
@@ -96,7 +122,10 @@ static __always_inline unsigned int pgt_root_level(struct mm_struct *mm);
  * Return: pointer to the entry for @addr in the root table of @mm.
  */
 static __always_inline pgtp_t pgtp_root(struct mm_struct *mm,
-					unsigned long addr);
+					unsigned long addr)
+{
+	return pgt_arch_root(mm, addr);
+}
 
 /**
  * pgtv_kind() - Classify a value.
@@ -104,7 +133,10 @@ static __always_inline pgtp_t pgtp_root(struct mm_struct *mm,
  *
  * Return: the kind of @v.
  */
-static __always_inline enum pgt_kind pgtv_kind(pgtv_t v);
+static __always_inline enum pgt_kind pgtv_kind(pgtv_t v)
+{
+	return pgt_arch_kind(v);
+}
 
 /**
  * pgtv_to_leaf() - Narrow a value to a leaf.
@@ -112,7 +144,11 @@ static __always_inline enum pgt_kind pgtv_kind(pgtv_t v);
  *
  * Return: @v as a pgt_leaf_t.
  */
-static __always_inline pgt_leaf_t pgtv_to_leaf(pgtv_t v);
+static __always_inline pgt_leaf_t pgtv_to_leaf(pgtv_t v)
+{
+	VM_WARN_ON_ONCE(pgtv_kind(v) != PGT_LEAF);
+	return (pgt_leaf_t){ .v = v };
+}
 
 /**
  * pgtv_to_softleaf() - Narrow a value to a software entry.
@@ -120,7 +156,11 @@ static __always_inline pgt_leaf_t pgtv_to_leaf(pgtv_t v);
  *
  * Return: @v as a pgt_softleaf_t.
  */
-static __always_inline pgt_softleaf_t pgtv_to_softleaf(pgtv_t v);
+static __always_inline pgt_softleaf_t pgtv_to_softleaf(pgtv_t v)
+{
+	VM_WARN_ON_ONCE(pgtv_kind(v) != PGT_SOFTLEAF);
+	return (pgt_softleaf_t){ .v = v };
+}
 
 /**
  * pgtv_to_table() - Narrow a value to a table entry.
@@ -128,7 +168,11 @@ static __always_inline pgt_softleaf_t pgtv_to_softleaf(pgtv_t v);
  *
  * Return: @v as a pgt_table_t.
  */
-static __always_inline pgt_table_t pgtv_to_table(pgtv_t v);
+static __always_inline pgt_table_t pgtv_to_table(pgtv_t v)
+{
+	VM_WARN_ON_ONCE(pgtv_kind(v) != PGT_TABLE);
+	return (pgt_table_t){ .v = v };
+}
 
 /**
  * pgtv_from_leaf() - A leaf as a value of any kind.
@@ -138,7 +182,10 @@ static __always_inline pgt_table_t pgtv_to_table(pgtv_t v);
  *
  * Return: @l as a pgtv_t.
  */
-static __always_inline pgtv_t pgtv_from_leaf(pgt_leaf_t l);
+static __always_inline pgtv_t pgtv_from_leaf(pgt_leaf_t l)
+{
+	return l.v;
+}
 
 /**
  * pgtv_from_softleaf() - A software entry as a value of any kind.
@@ -146,7 +193,10 @@ static __always_inline pgtv_t pgtv_from_leaf(pgt_leaf_t l);
  *
  * Return: @s as a pgtv_t.
  */
-static __always_inline pgtv_t pgtv_from_softleaf(pgt_softleaf_t s);
+static __always_inline pgtv_t pgtv_from_softleaf(pgt_softleaf_t s)
+{
+	return s.v;
+}
 
 /**
  * pgtv_from_table() - A table entry as a value of any kind.
@@ -154,7 +204,10 @@ static __always_inline pgtv_t pgtv_from_softleaf(pgt_softleaf_t s);
  *
  * Return: @t as a pgtv_t.
  */
-static __always_inline pgtv_t pgtv_from_table(pgt_table_t t);
+static __always_inline pgtv_t pgtv_from_table(pgt_table_t t)
+{
+	return t.v;
+}
 
 /**
  * pgt_table_child() - Entry for an address in the table a TABLE links.
@@ -167,7 +220,10 @@ static __always_inline pgtv_t pgtv_from_table(pgt_table_t t);
  *
  * Return: pointer to the entry for @addr one level below @t.
  */
-static __always_inline pgtp_t pgt_table_child(pgt_table_t t, unsigned long addr);
+static __always_inline pgtp_t pgt_table_child(pgt_table_t t, unsigned long addr)
+{
+	return pgt_arch_child(t.v, addr);
+}
 
 /**
  * pgtp_advance() - Entry @n places further in the same table.
@@ -176,7 +232,14 @@ static __always_inline pgtp_t pgt_table_child(pgt_table_t t, unsigned long addr)
  *
  * Return: pointer to the entry @n entries after @p.
  */
-static __always_inline pgtp_t pgtp_advance(pgtp_t p, unsigned int n);
+static __always_inline pgtp_t pgtp_advance(pgtp_t p, unsigned int n)
+{
+	unsigned int lvl = pgtp_level(p);
+	unsigned long size = 1UL << pgt_arch_entry_order(lvl);
+	void *ptr = pgtp_ptr(p) + n * size;
+
+	return pgtp_make(ptr, lvl);
+}
 
 /**
  * pgtp_next() - Next entry in the same table.
@@ -184,7 +247,10 @@ static __always_inline pgtp_t pgtp_advance(pgtp_t p, unsigned int n);
  *
  * Return: pointer to the entry after @p.
  */
-static __always_inline pgtp_t pgtp_next(pgtp_t p);
+static __always_inline pgtp_t pgtp_next(pgtp_t p)
+{
+	return pgtp_advance(p, 1);
+}
 
 /**
  * pgtp_addr_end() - End of the range an entry covers, clipped.
@@ -196,7 +262,11 @@ static __always_inline pgtp_t pgtp_next(pgtp_t p);
  * Return: the end of @p's range or @end, whichever comes first.
  */
 static __always_inline unsigned long pgtp_addr_end(pgtp_t p, unsigned long addr,
-						   unsigned long end);
+						   unsigned long end)
+{
+	VM_WARN_ON_ONCE(!pgtp_level(p) && ((addr | end) & ~PAGE_MASK));
+	return pgt_arch_addr_end(p, addr, end);
+}
 
 /**
  * pgtp_size() - Size of the range an entry covers.
@@ -204,7 +274,10 @@ static __always_inline unsigned long pgtp_addr_end(pgtp_t p, unsigned long addr,
  *
  * Return: the size in bytes, PAGE_SIZE at level 0.
  */
-static __always_inline unsigned long pgtp_size(pgtp_t p);
+static __always_inline unsigned long pgtp_size(pgtp_t p)
+{
+	return 1UL << pgt_arch_shift(pgtp_level(p));
+}
 
 /* Reads and stores */
 
@@ -218,7 +291,12 @@ static __always_inline unsigned long pgtp_size(pgtp_t p);
  *
  * Return: the value, at the level of @p.
  */
-static __always_inline pgtv_t pgtp_get(pgtp_t p);
+static __always_inline pgtv_t pgtp_get(pgtp_t p)
+{
+	unsigned int lvl = pgtp_level(p);
+
+	return (pgtv_t){ .val = pgt_arch_load(pgtp_ptr(p), lvl), .lvl = lvl };
+}
 
 /**
  * pgtp_get_lockless() - Snapshot an entry that may change concurrently.
@@ -232,7 +310,15 @@ static __always_inline pgtv_t pgtp_get(pgtp_t p);
  *
  * Return: the value, at the level of @p.
  */
-static __always_inline pgtv_t pgtp_get_lockless(pgtp_t p);
+static __always_inline pgtv_t pgtp_get_lockless(pgtp_t p)
+{
+	unsigned int lvl = pgtp_level(p);
+
+	return (pgtv_t){
+		.val = pgt_arch_load_lockless(pgtp_ptr(p), lvl),
+		.lvl = lvl,
+	};
+}
 
 /**
  * pgtp_set_leaf() - Store a leaf.
@@ -245,7 +331,11 @@ static __always_inline pgtv_t pgtp_get_lockless(pgtp_t p);
  */
 static __always_inline void pgtp_set_leaf(struct mm_struct *mm,
 					  unsigned long addr, pgtp_t p,
-					  pgt_leaf_t l);
+					  pgt_leaf_t l)
+{
+	VM_WARN_ON_ONCE(l.v.lvl != pgtp_level(p));
+	pgt_arch_store_leaf(mm, addr, pgtp_ptr(p), l.v.val, pgtp_level(p), 1);
+}
 
 /**
  * pgtp_set_leaf_nr() - Store consecutive leaves.
@@ -260,7 +350,13 @@ static __always_inline void pgtp_set_leaf(struct mm_struct *mm,
  */
 static __always_inline void pgtp_set_leaf_nr(struct mm_struct *mm,
 					     unsigned long addr, pgtp_t p,
-					     pgt_leaf_t l, unsigned int nr);
+					     pgt_leaf_t l, unsigned int nr)
+{
+	VM_WARN_ON_ONCE(l.v.lvl != pgtp_level(p));
+	VM_WARN_ON_ONCE(l.v.lvl && nr != 1);
+	pgt_arch_store_leaf(mm, addr, pgtp_ptr(p), l.v.val, pgtp_level(p),
+			    nr);
+}
 
 /**
  * pgtp_set_softleaf() - Store a software entry.
@@ -273,7 +369,12 @@ static __always_inline void pgtp_set_leaf_nr(struct mm_struct *mm,
  */
 static __always_inline void pgtp_set_softleaf(struct mm_struct *mm,
 					      unsigned long addr, pgtp_t p,
-					      pgt_softleaf_t s);
+					      pgt_softleaf_t s)
+{
+	VM_WARN_ON_ONCE(s.v.lvl != pgtp_level(p));
+	pgt_arch_store_softleaf(mm, addr, pgtp_ptr(p), s.v.val,
+				pgtp_level(p));
+}
 
 /**
  * pgtp_xchg() - Exchange an entry.
@@ -287,7 +388,16 @@ static __always_inline void pgtp_set_softleaf(struct mm_struct *mm,
  * Return: the old value.
  */
 static __always_inline pgtv_t pgtp_xchg(struct mm_struct *mm,
-					unsigned long addr, pgtp_t p, pgtv_t v);
+					unsigned long addr, pgtp_t p, pgtv_t v)
+{
+	unsigned int lvl = pgtp_level(p);
+
+	VM_WARN_ON_ONCE(v.lvl != lvl);
+	return (pgtv_t){
+		.val = pgt_arch_xchg(mm, addr, pgtp_ptr(p), v.val, lvl),
+		.lvl = lvl,
+	};
+}
 
 /**
  * pgtp_clear() - Clear an entry.
@@ -298,7 +408,10 @@ static __always_inline pgtv_t pgtp_xchg(struct mm_struct *mm,
  * The caller holds the lock of @p.
  */
 static __always_inline void pgtp_clear(struct mm_struct *mm, unsigned long addr,
-				       pgtp_t p);
+				       pgtp_t p)
+{
+	pgt_arch_clear(mm, addr, pgtp_ptr(p), pgtp_level(p));
+}
 
 /**
  * pgtp_invalidate() - Make a leaf unusable by the hardware.
@@ -313,7 +426,19 @@ static __always_inline void pgtp_clear(struct mm_struct *mm, unsigned long addr,
  * accessed and dirty bit the hardware set until then.
  */
 static __always_inline pgt_leaf_t pgtp_invalidate(struct vm_area_struct *vma,
-						  unsigned long addr, pgtp_t p);
+						  unsigned long addr, pgtp_t p)
+{
+	unsigned int lvl = pgtp_level(p);
+	pgtv_t old;
+
+	/* Level 0 has no split to protect; clearing is enough there */
+	VM_WARN_ON_ONCE(!lvl || !pgt_arch_can_leaf(lvl));
+	old = (pgtv_t){
+		.val = pgt_arch_invalidate(vma, addr, pgtp_ptr(p), lvl),
+		.lvl = lvl,
+	};
+	return pgtv_to_leaf(old);
+}
 
 /**
  * pgt_alloc_child() - Link a new table below an empty entry.
@@ -348,7 +473,11 @@ void pgtp_clear_bad(pgtp_t p);
  *
  * Return: true if the entries are identical.
  */
-static __always_inline bool pgtv_same(pgtv_t a, pgtv_t b);
+static __always_inline bool pgtv_same(pgtv_t a, pgtv_t b)
+{
+	VM_WARN_ON_ONCE(a.lvl != b.lvl);
+	return pgt_arch_same(a, b);
+}
 
 /**
  * pgt_none_mk() - Build a NONE value.
@@ -356,7 +485,10 @@ static __always_inline bool pgtv_same(pgtv_t a, pgtv_t b);
  *
  * Return: the empty entry at @lvl.
  */
-static __always_inline pgtv_t pgt_none_mk(unsigned int lvl);
+static __always_inline pgtv_t pgt_none_mk(unsigned int lvl)
+{
+	return pgt_arch_none_mk(lvl);
+}
 
 /* Leaves */
 
@@ -369,7 +501,14 @@ static __always_inline pgtv_t pgt_none_mk(unsigned int lvl);
  * Return: a leaf mapping @pfn at @lvl.
  */
 static __always_inline pgt_leaf_t pgt_leaf_mk(unsigned long pfn, pgprot_t prot,
-					      unsigned int lvl);
+					      unsigned int lvl)
+{
+	pgt_leaf_t l;
+
+	VM_WARN_ON_ONCE(!pgt_arch_can_leaf(lvl));
+	l.v = pgt_arch_mk(pfn, prot, lvl);
+	return l;
+}
 
 /**
  * pgt_leaf_accessible() - Check whether the hardware may use a leaf.
@@ -381,7 +520,10 @@ static __always_inline pgt_leaf_t pgt_leaf_mk(unsigned long pfn, pgprot_t prot,
  *
  * Return: true if user access of the given type is allowed.
  */
-static __always_inline bool pgt_leaf_accessible(pgt_leaf_t l, bool write);
+static __always_inline bool pgt_leaf_accessible(pgt_leaf_t l, bool write)
+{
+	return pgt_arch_accessible(l.v, write);
+}
 
 /**
  * pgt_leaf_pfn() - Page frame a leaf maps.
@@ -389,7 +531,10 @@ static __always_inline bool pgt_leaf_accessible(pgt_leaf_t l, bool write);
  *
  * Return: the first PFN of the memory @l maps.
  */
-static __always_inline unsigned long pgt_leaf_pfn(pgt_leaf_t l);
+static __always_inline unsigned long pgt_leaf_pfn(pgt_leaf_t l)
+{
+	return pgt_arch_pfn(l.v);
+}
 
 /**
  * pgt_leaf_shift() - Size of the memory a leaf maps, as a shift.
@@ -397,7 +542,10 @@ static __always_inline unsigned long pgt_leaf_pfn(pgt_leaf_t l);
  *
  * Return: log2 of the size, PAGE_SHIFT at level 0.
  */
-static __always_inline unsigned int pgt_leaf_shift(pgt_leaf_t l);
+static __always_inline unsigned int pgt_leaf_shift(pgt_leaf_t l)
+{
+	return pgt_arch_shift(l.v.lvl);
+}
 
 /**
  * pgt_leaf_size() - Size of the memory a leaf maps.
@@ -405,7 +553,10 @@ static __always_inline unsigned int pgt_leaf_shift(pgt_leaf_t l);
  *
  * Return: the size in bytes.
  */
-static __always_inline unsigned long pgt_leaf_size(pgt_leaf_t l);
+static __always_inline unsigned long pgt_leaf_size(pgt_leaf_t l)
+{
+	return 1UL << pgt_leaf_shift(l);
+}
 
 /**
  * pgt_leaf_write() - Check whether a leaf is writable.
@@ -415,7 +566,10 @@ static __always_inline unsigned long pgt_leaf_size(pgt_leaf_t l);
  *
  * Return: true if writable.
  */
-static __always_inline bool pgt_leaf_write(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_write(pgt_leaf_t l)
+{
+	return pgt_arch_write(l.v);
+}
 
 /**
  * pgt_leaf_dirty() - Check whether a leaf is dirty.
@@ -425,7 +579,11 @@ static __always_inline bool pgt_leaf_write(pgt_leaf_t l);
  *
  * Return: true if dirty.
  */
-static __always_inline bool pgt_leaf_dirty(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_dirty(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_DIRTY) ||
+	       pgt_arch_test_flag(l.v, PGT_F_SAVED_DIRTY);
+}
 
 /**
  * pgt_leaf_young() - Check whether a leaf is young.
@@ -433,7 +591,10 @@ static __always_inline bool pgt_leaf_dirty(pgt_leaf_t l);
  *
  * Return: true if accessed.
  */
-static __always_inline bool pgt_leaf_young(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_young(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_YOUNG);
+}
 
 /**
  * pgt_leaf_special() - Check whether a leaf is special.
@@ -441,7 +602,10 @@ static __always_inline bool pgt_leaf_young(pgt_leaf_t l);
  *
  * Return: true if @l maps memory without a refcounted struct page.
  */
-static __always_inline bool pgt_leaf_special(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_special(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_SPECIAL);
+}
 
 /**
  * pgt_leaf_soft_dirty() - Check the soft-dirty state.
@@ -449,7 +613,10 @@ static __always_inline bool pgt_leaf_special(pgt_leaf_t l);
  *
  * Return: true if soft-dirty.
  */
-static __always_inline bool pgt_leaf_soft_dirty(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_soft_dirty(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_SOFT_DIRTY);
+}
 
 /**
  * pgt_leaf_uffd_wp() - Check the userfaultfd write-protect state.
@@ -457,7 +624,10 @@ static __always_inline bool pgt_leaf_soft_dirty(pgt_leaf_t l);
  *
  * Return: true if write-protected by userfaultfd.
  */
-static __always_inline bool pgt_leaf_uffd_wp(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_uffd_wp(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_UFFD_WP);
+}
 
 /**
  * pgt_leaf_exec() - Check whether a leaf is executable.
@@ -467,7 +637,10 @@ static __always_inline bool pgt_leaf_uffd_wp(pgt_leaf_t l);
  *
  * Return: true if executable.
  */
-static __always_inline bool pgt_leaf_exec(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_exec(pgt_leaf_t l)
+{
+	return !pgt_arch_test_flag(l.v, PGT_F_NOEXEC);
+}
 
 /**
  * pgt_leaf_user() - Check whether a leaf is user-accessible.
@@ -476,7 +649,10 @@ static __always_inline bool pgt_leaf_exec(pgt_leaf_t l);
  * Return: true if the user bit is set; false where the format has none,
  * and always on the fallback.
  */
-static __always_inline bool pgt_leaf_user(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_user(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_USER);
+}
 
 /**
  * pgt_leaf_cont() - Check the contiguous hint.
@@ -484,7 +660,10 @@ static __always_inline bool pgt_leaf_user(pgt_leaf_t l);
  *
  * Return: true if @l is part of a contiguous-hint run.
  */
-static __always_inline bool pgt_leaf_cont(pgt_leaf_t l);
+static __always_inline bool pgt_leaf_cont(pgt_leaf_t l)
+{
+	return pgt_arch_test_flag(l.v, PGT_F_CONT);
+}
 
 /**
  * pgt_leaf_modify() - Change the protection of a leaf.
@@ -497,7 +676,11 @@ static __always_inline bool pgt_leaf_cont(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_modify(pgt_leaf_t l, pgprot_t prot);
+static __always_inline pgt_leaf_t pgt_leaf_modify(pgt_leaf_t l, pgprot_t prot)
+{
+	l.v = pgt_arch_modify(l.v, prot);
+	return l;
+}
 
 /**
  * pgt_leaf_pgprot() - Protection of a leaf.
@@ -505,7 +688,10 @@ static __always_inline pgt_leaf_t pgt_leaf_modify(pgt_leaf_t l, pgprot_t prot);
  *
  * Return: the protection in the canonical layout.
  */
-static __always_inline pgprot_t pgt_leaf_pgprot(pgt_leaf_t l);
+static __always_inline pgprot_t pgt_leaf_pgprot(pgt_leaf_t l)
+{
+	return pgt_arch_pgprot(l.v);
+}
 
 /**
  * pgt_leaf_mkwrite() - Make a leaf writable.
@@ -515,7 +701,11 @@ static __always_inline pgprot_t pgt_leaf_pgprot(pgt_leaf_t l);
  * Return: the modified value.
  */
 static __always_inline pgt_leaf_t pgt_leaf_mkwrite(pgt_leaf_t l,
-						   struct vm_area_struct *vma);
+						   struct vm_area_struct *vma)
+{
+	l.v = pgt_arch_mkwrite(l.v, vma);
+	return l;
+}
 
 /**
  * pgt_leaf_mkwrite_novma() - Make a leaf writable outside a shadow stack VMA.
@@ -523,7 +713,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkwrite(pgt_leaf_t l,
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkwrite_novma(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkwrite_novma(pgt_leaf_t l)
+{
+	l.v = pgt_arch_mkwrite(l.v, NULL);
+	return l;
+}
 
 /**
  * pgt_leaf_wrprotect() - Make a leaf read-only.
@@ -531,7 +725,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkwrite_novma(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_wrprotect(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_wrprotect(pgt_leaf_t l)
+{
+	l.v = pgt_arch_wrprotect(l.v);
+	return l;
+}
 
 /**
  * pgt_leaf_mkdirty() - Mark a leaf dirty.
@@ -541,7 +739,11 @@ static __always_inline pgt_leaf_t pgt_leaf_wrprotect(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkdirty(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkdirty(pgt_leaf_t l)
+{
+	l.v = pgt_arch_mkdirty(l.v);
+	return l;
+}
 
 /**
  * pgt_leaf_mkclean() - Clear the dirty state of a leaf.
@@ -549,7 +751,12 @@ static __always_inline pgt_leaf_t pgt_leaf_mkdirty(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkclean(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkclean(pgt_leaf_t l)
+{
+	l.v = pgt_arch_clear_flag(l.v, PGT_F_DIRTY);
+	l.v = pgt_arch_clear_flag(l.v, PGT_F_SAVED_DIRTY);
+	return l;
+}
 
 /**
  * pgt_leaf_mkyoung() - Mark a leaf young.
@@ -557,7 +764,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkclean(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkyoung(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkyoung(pgt_leaf_t l)
+{
+	l.v = pgt_arch_set_flag(l.v, PGT_F_YOUNG);
+	return l;
+}
 
 /**
  * pgt_leaf_mkold() - Mark a leaf old.
@@ -565,7 +776,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkyoung(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkold(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkold(pgt_leaf_t l)
+{
+	l.v = pgt_arch_clear_flag(l.v, PGT_F_YOUNG);
+	return l;
+}
 
 /**
  * pgt_leaf_mkspecial() - Mark a leaf special.
@@ -573,7 +788,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkold(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkspecial(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkspecial(pgt_leaf_t l)
+{
+	l.v = pgt_arch_set_flag(l.v, PGT_F_SPECIAL);
+	return l;
+}
 
 /**
  * pgt_leaf_mksoft_dirty() - Set soft-dirty.
@@ -581,7 +800,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkspecial(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mksoft_dirty(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mksoft_dirty(pgt_leaf_t l)
+{
+	l.v = pgt_arch_set_flag(l.v, PGT_F_SOFT_DIRTY);
+	return l;
+}
 
 /**
  * pgt_leaf_clear_soft_dirty() - Clear soft-dirty.
@@ -589,7 +812,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mksoft_dirty(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_clear_soft_dirty(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_clear_soft_dirty(pgt_leaf_t l)
+{
+	l.v = pgt_arch_clear_flag(l.v, PGT_F_SOFT_DIRTY);
+	return l;
+}
 
 /**
  * pgt_leaf_mkuffd_wp() - Set userfaultfd write-protect.
@@ -597,7 +824,11 @@ static __always_inline pgt_leaf_t pgt_leaf_clear_soft_dirty(pgt_leaf_t l);
  *
  * Return: the modified value, also write-protected.
  */
-static __always_inline pgt_leaf_t pgt_leaf_mkuffd_wp(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_mkuffd_wp(pgt_leaf_t l)
+{
+	l.v = pgt_arch_set_flag(l.v, PGT_F_UFFD_WP);
+	return pgt_leaf_wrprotect(l);
+}
 
 /**
  * pgt_leaf_clear_uffd_wp() - Clear userfaultfd write-protect.
@@ -605,7 +836,11 @@ static __always_inline pgt_leaf_t pgt_leaf_mkuffd_wp(pgt_leaf_t l);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_leaf_t pgt_leaf_clear_uffd_wp(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_clear_uffd_wp(pgt_leaf_t l)
+{
+	l.v = pgt_arch_clear_flag(l.v, PGT_F_UFFD_WP);
+	return l;
+}
 
 /**
  * pgt_leaf_next() - Advance a leaf to the memory that follows it.
@@ -613,7 +848,11 @@ static __always_inline pgt_leaf_t pgt_leaf_clear_uffd_wp(pgt_leaf_t l);
  *
  * Return: @l with its PFN advanced by pgt_leaf_size(@l) >> PAGE_SHIFT.
  */
-static __always_inline pgt_leaf_t pgt_leaf_next(pgt_leaf_t l);
+static __always_inline pgt_leaf_t pgt_leaf_next(pgt_leaf_t l)
+{
+	l.v = pgt_arch_next(l.v);
+	return l;
+}
 
 /* Software entries */
 
@@ -625,7 +864,14 @@ static __always_inline pgt_leaf_t pgt_leaf_next(pgt_leaf_t l);
  * Return: @e encoded at @lvl.
  */
 static __always_inline pgt_softleaf_t pgt_softleaf_mk(softleaf_t e,
-						      unsigned int lvl);
+						      unsigned int lvl)
+{
+	pgt_softleaf_t s;
+
+	VM_WARN_ON_ONCE(!pgt_arch_can_softleaf(lvl));
+	s.v = pgt_arch_from_softleaf(e, lvl);
+	return s;
+}
 
 /**
  * softleaf_from_pgt() - Decode a software entry.
@@ -633,7 +879,10 @@ static __always_inline pgt_softleaf_t pgt_softleaf_mk(softleaf_t e,
  *
  * Return: the softleaf_t @s encodes.
  */
-static __always_inline softleaf_t softleaf_from_pgt(pgt_softleaf_t s);
+static __always_inline softleaf_t softleaf_from_pgt(pgt_softleaf_t s)
+{
+	return pgt_arch_to_softleaf(s.v);
+}
 
 /**
  * pgt_softleaf_soft_dirty() - Check the soft-dirty state.
@@ -641,7 +890,10 @@ static __always_inline softleaf_t softleaf_from_pgt(pgt_softleaf_t s);
  *
  * Return: true if soft-dirty.
  */
-static __always_inline bool pgt_softleaf_soft_dirty(pgt_softleaf_t s);
+static __always_inline bool pgt_softleaf_soft_dirty(pgt_softleaf_t s)
+{
+	return pgt_arch_test_flag(s.v, PGT_F_SWP_SOFT_DIRTY);
+}
 
 /**
  * pgt_softleaf_uffd_wp() - Check the userfaultfd write-protect state.
@@ -649,7 +901,10 @@ static __always_inline bool pgt_softleaf_soft_dirty(pgt_softleaf_t s);
  *
  * Return: true if write-protected by userfaultfd.
  */
-static __always_inline bool pgt_softleaf_uffd_wp(pgt_softleaf_t s);
+static __always_inline bool pgt_softleaf_uffd_wp(pgt_softleaf_t s)
+{
+	return pgt_arch_test_flag(s.v, PGT_F_SWP_UFFD_WP);
+}
 
 /**
  * pgt_softleaf_mksoft_dirty() - Set soft-dirty.
@@ -658,7 +913,11 @@ static __always_inline bool pgt_softleaf_uffd_wp(pgt_softleaf_t s);
  * Return: the modified value.
  */
 static __always_inline pgt_softleaf_t
-pgt_softleaf_mksoft_dirty(pgt_softleaf_t s);
+pgt_softleaf_mksoft_dirty(pgt_softleaf_t s)
+{
+	s.v = pgt_arch_set_flag(s.v, PGT_F_SWP_SOFT_DIRTY);
+	return s;
+}
 
 /**
  * pgt_softleaf_clear_soft_dirty() - Clear soft-dirty.
@@ -667,7 +926,11 @@ pgt_softleaf_mksoft_dirty(pgt_softleaf_t s);
  * Return: the modified value.
  */
 static __always_inline pgt_softleaf_t
-pgt_softleaf_clear_soft_dirty(pgt_softleaf_t s);
+pgt_softleaf_clear_soft_dirty(pgt_softleaf_t s)
+{
+	s.v = pgt_arch_clear_flag(s.v, PGT_F_SWP_SOFT_DIRTY);
+	return s;
+}
 
 /**
  * pgt_softleaf_mkuffd_wp() - Set userfaultfd write-protect.
@@ -675,7 +938,11 @@ pgt_softleaf_clear_soft_dirty(pgt_softleaf_t s);
  *
  * Return: the modified value.
  */
-static __always_inline pgt_softleaf_t pgt_softleaf_mkuffd_wp(pgt_softleaf_t s);
+static __always_inline pgt_softleaf_t pgt_softleaf_mkuffd_wp(pgt_softleaf_t s)
+{
+	s.v = pgt_arch_set_flag(s.v, PGT_F_SWP_UFFD_WP);
+	return s;
+}
 
 /**
  * pgt_softleaf_clear_uffd_wp() - Clear userfaultfd write-protect.
@@ -684,7 +951,11 @@ static __always_inline pgt_softleaf_t pgt_softleaf_mkuffd_wp(pgt_softleaf_t s);
  * Return: the modified value.
  */
 static __always_inline pgt_softleaf_t
-pgt_softleaf_clear_uffd_wp(pgt_softleaf_t s);
+pgt_softleaf_clear_uffd_wp(pgt_softleaf_t s)
+{
+	s.v = pgt_arch_clear_flag(s.v, PGT_F_SWP_UFFD_WP);
+	return s;
+}
 
 /* Tables */
 
@@ -699,7 +970,13 @@ pgt_softleaf_clear_uffd_wp(pgt_softleaf_t s);
  * Return: a table entry at @lvl linking @table.
  */
 static __always_inline pgt_table_t pgt_table_mk(struct ptdesc *table,
-						unsigned int lvl);
+						unsigned int lvl)
+{
+	pgt_table_t t;
+
+	t.v = pgt_arch_table_entry(table, lvl);
+	return t;
+}
 
 /* Locking */
 
@@ -714,7 +991,10 @@ static __always_inline pgt_table_t pgt_table_mk(struct ptdesc *table,
  *
  * Return: the lock.
  */
-static __always_inline spinlock_t *pgtp_lockptr(struct mm_struct *mm, pgtp_t p);
+static __always_inline spinlock_t *pgtp_lockptr(struct mm_struct *mm, pgtp_t p)
+{
+	return pgt_arch_lockptr(mm, p);
+}
 
 /**
  * pgtp_lock_table() - Lock a level-0 table.
