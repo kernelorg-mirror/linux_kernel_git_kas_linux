@@ -124,6 +124,12 @@ void *extend_brk(size_t size, size_t align);
 
 extern void probe_roms(void);
 
+#ifdef CONFIG_ARCH_HAS_PGT
+void __init pgt_x86_init(void);
+#else
+static inline void pgt_x86_init(void) { }
+#endif
+
 void clear_bss(void);
 
 #ifdef __i386__

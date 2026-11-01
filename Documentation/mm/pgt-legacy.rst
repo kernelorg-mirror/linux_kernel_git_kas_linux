@@ -254,11 +254,12 @@ x86: ``pud_present()`` ignores ``_PAGE_PROTNONE``
   ``pmd_present()`` and ``pte_present()`` accept it. A PSE entry at level 2
   is a LEAF in pgt either way.
 
-x86: ``pud_bad()``, ``p4d_bad()`` and ``pgd_bad()`` are looser than ``pmd_bad()``
-  ``pud_bad()`` and ``p4d_bad()`` accept any subset of the table flags,
-  including one without ``_PAGE_PRESENT``; a legacy walk follows such an
-  entry. The native table pattern is ``pmd_bad()``'s at every level and
-  calls it BAD. Only entries that the kernel never writes differ.
+x86: ``pud_bad()`` and ``p4d_bad()`` are looser than ``pmd_bad()``
+  They accept any subset of the table flags, including one without
+  ``_PAGE_PRESENT``; a legacy walk follows such an entry. The native table
+  pattern is ``pmd_bad()``'s at every level and calls it BAD; at level 4 it
+  also requires ``_PAGE_ACCESSED``, as ``pgd_bad()`` does. Only entries that
+  the kernel never writes differ.
 
 x86: the NONE test ignores accessed and dirty
   ``pte_none()``, ``pmd_none()``, ``pud_none()`` and ``p4d_none()`` mask

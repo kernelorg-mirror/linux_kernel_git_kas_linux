@@ -152,30 +152,43 @@ an invalidated or ``PROT_NONE`` large leaf looks non-present.
 x86-64 instance
 ---------------
 
-=====  ===============================  =================  ========  ===========================
-Level  NONE                             LEAF               SOFTLEAF  TABLE
-=====  ===============================  =================  ========  ===========================
-0      no bits outside accessed/dirty   present or         else      never
-                                        PROT_NONE
-1      no bits outside accessed/dirty   PSE                if non-   table pattern
-                                                           present
-2      no bits outside accessed/dirty   PSE                never     table pattern
-3      no bits outside accessed/dirty   never              never     table pattern, NX ignored
-4      zero                             never              never     table pattern, NX ignored
-=====  ===============================  =================  ========  ===========================
+The levels are the paging structures of the Intel SDM: level 0 is the page
+table (PT), 1 the page directory (PD), 2 the page-directory-pointer table
+(PDPT), 3 the PML4 table and 4 the PML5 table. Without 5-level paging the
+root is the PML4 table.
 
-- The accessed and dirty bits are ignored by the NONE test at levels 0 to 3
+==========  ===============================  =================  ========  ===========================
+Level       NONE                             LEAF               SOFTLEAF  TABLE
+==========  ===============================  =================  ========  ===========================
+0 (PT)      no bits outside accessed/dirty   present or         else      never
+                                             PROT_NONE
+1 (PD)      no bits outside accessed/dirty   PS                 if non-   table pattern
+                                                                present
+2 (PDPT)    no bits outside accessed/dirty   PS                 never     table pattern
+3 (PML4)    no bits outside accessed/dirty   never              never     table pattern, NX ignored
+4 (PML5)    zero                             never              never     table pattern, NX ignored,
+                                                                          accessed required
+==========  ===============================  =================  ========  ===========================
+
+- The accessed and dirty bits are ignored by the NONE test from PT to PML4
   (``_PAGE_KNL_ERRATUM_MASK``): Knights Landing can set them in a
-  non-present entry. Level 4 does not ignore them.
+  non-present entry. PML5 does not ignore them.
 - ``present_mask`` is ``_PAGE_PRESENT | _PAGE_PROTNONE`` at every level.
 - The table pattern: the flag bits other than ``_PAGE_USER`` and
-  ``_PAGE_ACCESSED`` equal ``_KERNPG_TABLE`` without ``_PAGE_ACCESSED``. At
-  levels 3 and 4 ``_PAGE_NX`` is also ignored when page table isolation is
-  built in, because it sets NX in the kernel copy of user top-level entries.
-- ``_PAGE_PSE`` is in ``mbz`` at levels 3 and 4, so a PSE entry there is BAD.
-- Level-1 migration and device-private entries exist (with
-  ``CONFIG_ARCH_HAS_PMD_SOFTLEAVES``); level-2 software entries do not. A
-  non-present, non-PSE entry at level 2 or above is BAD.
+  ``_PAGE_ACCESSED`` equal ``_KERNPG_TABLE`` without ``_PAGE_ACCESSED``; in
+  a PML5 entry ``_PAGE_ACCESSED`` must be set, as ``pgd_bad()`` requires. In
+  PML4 and PML5 entries ``_PAGE_NX`` is also ignored when page table
+  isolation is built in, because it sets NX in the kernel copy of user
+  top-level entries.
+- The legacy ``pud_bad()`` and ``p4d_bad()`` accept any subset of the table
+  flags, a read-only or non-present entry included, and a legacy walker
+  descends into such an entry. pgt calls it BAD. The kernel never writes
+  one.
+- PS (``_PAGE_PSE``) is in ``mbz`` in PML4 and PML5 entries, so such an
+  entry with PS set is BAD.
+- Migration and device-private entries exist in a PD (with
+  ``CONFIG_ARCH_HAS_PMD_SOFTLEAVES``), software entries in a PDPT do not. A
+  non-present entry without PS from the PDPT up is BAD.
 
 
 Entry operations
@@ -281,9 +294,9 @@ Canonical pgprot
 A ``pgprot_t`` crossing the consumer API is always in the level-0 layout.
 ``pgt_leaf_mk(pfn, prot, lvl)`` relocates bits whose position depends on
 the level, and ``pgt_leaf_pgprot(l)`` moves them back; ``pgt_leaf_modify()``
-relocates the same way. On x86 that is the PAT bit: bit 7 at level 0, bit
-12 at levels 1 and 2. The format table does not describe such bits; an
-architecture that has them overrides ``pgt_arch_mk()``,
+relocates the same way. On x86 that is the PAT bit: bit 7 in a PTE, bit 12
+in a PDE or PDPTE, where bit 7 is PS. The format table does not describe
+such bits; an architecture that has them overrides ``pgt_arch_mk()``,
 ``pgt_arch_pgprot()`` and ``pgt_arch_modify()``.
 
 Software entries
@@ -556,7 +569,8 @@ Hook                            Default                                 Overridd
                                                                         blocks (arm64)
 ``pgt_arch_store_leaf()``       plain store of ``nr`` entries           paravirt, PTI mirror (x86)
 ``pgt_arch_store_softleaf()``   plain store                             paravirt (x86)
-``pgt_arch_xchg()``             ``xchg()``                              paravirt (x86)
+``pgt_arch_xchg()``             ``xchg()``                              paravirt, page table check
+                                                                        (x86)
 ``pgt_arch_invalidate()``       exchange with the invalid encoding,     own invalidate sequence
                                 flush the range
 ``pgt_arch_populate()``         store ``pgt_table_mk()``                Xen PV table pinning (x86)
@@ -570,7 +584,7 @@ Hook                            Default                                 Overridd
 ``pgt_arch_accessible()``       valid, user and, for a write,           protection keys (x86)
                                 ``pgt_arch_write()``
 ``pgt_arch_pfn_inverted()``     false                                   L1TF (x86)
-``pgt_arch_table_alloc()``      ``pagetable_alloc()``, filled with      the root table (x86)
+``pgt_arch_table_alloc()``      ``pagetable_alloc()``, filled with
                                 ``none_val``
 ``pgt_arch_table_free()``       ``pagetable_free()``
 ``pgt_arch_table_ctor()``       the ptdesc constructors
@@ -594,15 +608,26 @@ exist because of x86 rules of this kind (see `x86-64 format rules`_).
 x86-64 overrides
 ----------------
 
-``load``, the stores and ``xchg`` go through the paravirt page table
-operations, so ``CONFIG_PARAVIRT_XXL`` kernels and Xen PV keep working. A
-store at the root level also updates the PTI user copy of the top-level
-table. ``populate`` tells the hypervisor about the new table before it is
-linked. ``mkwrite``, ``mkdirty``, ``wrprotect`` and ``write`` implement the
-shadow stack rules around ``_PAGE_SAVED_DIRTY``. ``mk``, ``pgprot`` and
-``modify`` move the PAT bit. ``accessible`` checks protection keys.
-``pfn_inverted`` implements the L1TF rule. ``root_level`` follows
-``pgtable_l5_enabled()``. The root table is not allocated through pgt.
+``load`` and the stores read and write an entry as it is, at every level.
+A store at the root level also updates the PTI user copy of the top-level
+table. With ``CONFIG_PARAVIRT_XXL`` they translate every entry and store
+through the paravirt operation of its level instead, which Xen PV
+implements per level; ``xchg`` translates the same way but exchanges
+natively, as ``ptep_get_and_clear()`` does. Leaf stores and exchanges below
+level 3 report to the page table check. ``populate`` tells the hypervisor
+about the new table before it is linked. ``mkwrite``, ``mkdirty``,
+``wrprotect`` and ``write`` implement the shadow stack rules around
+``_PAGE_SAVED_DIRTY``. ``mk``, ``pgprot`` and ``modify`` move the PAT bit.
+``accessible`` checks protection keys. ``pfn_inverted`` implements the L1TF
+rule. ``root_level`` follows ``pgtable_l5_enabled()``. The root table is
+not allocated through pgt.
+
+The rules that depend on more than one bit are written once, on a raw
+value of any level, in ``<asm/pgt-rules.h>``: L1TF inversion, the shadow
+stack dirty state, the protection key check and the PTI copy. The
+provider and the per-level helpers of ``<asm/pgtable.h>`` both call them.
+The provider uses per-level interfaces only for the paravirt operations,
+the page table check and the TLB gathering helpers.
 
 x86-64 format rules
 -------------------
@@ -627,7 +652,9 @@ Protection keys
 Boot-time masks
   ``_PAGE_ENC`` and the physical address mask are boot-time values with
   ``CONFIG_X86_MEM_ENCRYPT``, and the protection of a new leaf is filtered
-  through ``__supported_pte_mask``.
+  through ``__supported_pte_mask``. The three are read as constants patched
+  into the code with ``runtime_const_ptr()`` once ``init_mem_mapping()`` has
+  run; modules read the variables.
 
 PAT position
   See `Canonical pgprot`_.
