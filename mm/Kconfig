@@ -1500,7 +1500,7 @@ config ARCH_HAS_PGT
 	  implementation of the level-generic page table contract.
 
 config PGT_FALLBACK
-	def_bool !ARCH_HAS_PGT
+	def_bool !ARCH_HAS_PGT || PGT_FORCE_FALLBACK
 	depends on PGT
 
 config PGT_128BIT
@@ -1509,6 +1509,25 @@ config PGT_128BIT
 	help
 	  Selected by architectures whose page table entries are 128 bits
 	  wide, such as arm64 with FEAT_D128. pgtval_t is then u128.
+
+config PGT_TEST
+	bool "Level-generic page table API build check and walker benchmark"
+	depends on PGT && DEBUG_KERNEL
+	help
+	  Build a user of every function of the level-generic page table
+	  API, so that the build checks all of it, and a debugfs file,
+	  pgt_bench, that times page table walks written with pgt and with
+	  the per-level helpers. Not for production kernels.
+
+config PGT_FORCE_FALLBACK
+	bool "Use the generic page table fallback even with a native one"
+	depends on ARCH_HAS_PGT && DEBUG_KERNEL
+	help
+	  Build the level-generic page table API on top of the legacy
+	  per-level helpers even though the architecture has a native
+	  implementation, so that both can be tested on one machine.
+
+	  If unsure, say N.
 
 config FIND_NORMAL_PAGE
 	def_bool n

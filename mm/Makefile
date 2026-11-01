@@ -81,6 +81,7 @@ obj-$(CONFIG_PGT_FALLBACK)	+= pgt-fallback.o
 ifndef CONFIG_PGT_FALLBACK
 obj-$(CONFIG_PGT)		+= pgt-fmt.o
 endif
+obj-$(CONFIG_PGT_TEST)		+= pgt-test.o
 
 obj-$(CONFIG_SWAP)	+= page_io.o swap_state.o swapfile.o
 obj-$(CONFIG_ZSWAP)	+= zswap.o
