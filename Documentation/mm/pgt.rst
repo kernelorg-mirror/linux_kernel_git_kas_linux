@@ -533,8 +533,11 @@ alone; the fallback, which has no table, overrides every one.
 
 Some fields are known only at boot on some configurations: on x86 the
 memory encryption bit in table entries and the physical address mask with
-``CONFIG_X86_MEM_ENCRYPT``. An architecture provides such a table as
-``__ro_after_init`` data instead and gives up the folding there.
+``CONFIG_X86_MEM_ENCRYPT``. The generic code reads ``table_pfn_mask``,
+``leaf_pfn_mask``, ``table_mask``, ``table_val`` and ``table_flags``
+through accessors, ``pgt_fmt_table_pfn_mask()`` and so on, and the
+architecture overrides the accessor of such a field; the rest of the table
+still folds.
 
 Hooks
 -----

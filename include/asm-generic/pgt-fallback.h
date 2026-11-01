@@ -25,7 +25,6 @@
 #define __pgt_pud(v)	__pud((v).val)
 #define __pgt_p4d(v)	__p4d((v).val)
 #define __pgt_pgd(v)	__pgd((v).val)
-#define __pgtv(x, l)	((pgtv_t){ .val = (x), .lvl = (l) })
 
 /* The PUD leaf helpers exist only with THP on some architectures (riscv) */
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) && \
