@@ -344,6 +344,9 @@ SECTIONS
 
 	RUNTIME_CONST_VARIABLES
 	RUNTIME_CONST(ptr, USER_PTR_MAX)
+	RUNTIME_CONST(ptr, __supported_pte_mask)
+	RUNTIME_CONST(ptr, physical_mask)
+	RUNTIME_CONST(ptr, sme_me_mask)
 
 	. = ALIGN(PAGE_SIZE);
 

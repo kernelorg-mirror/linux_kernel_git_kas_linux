@@ -1136,6 +1136,7 @@ void __init setup_arch(char **cmdline_p)
 	x86_platform.realmode_reserve();
 
 	init_mem_mapping();
+	pgt_x86_init();
 
 	/*
 	 * init_mem_mapping() relies on the early IDT page fault handling.
