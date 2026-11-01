@@ -1281,6 +1281,7 @@ error:
 static unsigned long pgt_checks __initdata;
 static unsigned long pgt_failures __initdata;
 static unsigned long pgt_gaps __initdata;
+static unsigned long pgt_stricter __initdata;
 
 static const char * const pgt_kind_name[] __initconst = {
 	[PGT_NONE] = "NONE",
@@ -1499,6 +1500,26 @@ static void __init pgt_kind_tests(struct pgtable_debug_args *args)
 }
 
 /*
+ * Above level 1 a native implementation may be stricter than the legacy
+ * pXd_bad() about what a table entry is, never looser: pud_bad() and
+ * p4d_bad() on x86 accept any subset of the table flags. The fallback is
+ * the legacy rule itself.
+ */
+#if CONFIG_PGTABLE_LEVELS > 2
+static void __init pgt_check_table_rule(pgtv_t v, enum pgt_kind k, bool bad)
+{
+	if (IS_ENABLED(CONFIG_PGT_FALLBACK)) {
+		PGT_CHECK((k == PGT_BAD) == bad, "lvl %u %#llx", v.lvl,
+			  (u64)v.val);
+		return;
+	}
+	PGT_CHECK(!bad || k == PGT_BAD, "lvl %u %#llx", v.lvl, (u64)v.val);
+	if (!bad && k == PGT_BAD)
+		pgt_stricter++;
+}
+#endif
+
+/*
  * pgt agrees with the legacy helpers of the level. On the fallback this
  * checks the level mapping and the classification order; on a native
  * implementation it checks the format table.
@@ -1595,8 +1616,7 @@ static void __init pgt_legacy_check(pgtv_t v)
 			PGT_CHECK((k == PGT_LEAF) == !!pud_leaf(pud), "%#llx",
 				  (u64)v.val);
 			if (!pud_leaf(pud))
-				PGT_CHECK((k == PGT_BAD) == !!pud_bad(pud),
-					  "%#llx", (u64)v.val);
+				pgt_check_table_rule(v, k, pud_bad(pud));
 		} else {
 			PGT_CHECK(k == (pud_leaf(pud) ? PGT_LEAF : PGT_BAD),
 				  "%#llx", (u64)v.val);
@@ -1623,8 +1643,7 @@ static void __init pgt_legacy_check(pgtv_t v)
 		PGT_CHECK((k == PGT_NONE) == !!p4d_none(p4d), "%#llx",
 			  (u64)v.val);
 		if (k != PGT_NONE && p4d_present(p4d) && !p4d_leaf(p4d))
-			PGT_CHECK((k == PGT_BAD) == !!p4d_bad(p4d), "%#llx",
-				  (u64)v.val);
+			pgt_check_table_rule(v, k, p4d_bad(p4d));
 		break;
 	}
 #endif
@@ -1635,8 +1654,7 @@ static void __init pgt_legacy_check(pgtv_t v)
 		PGT_CHECK((k == PGT_NONE) == !!pgd_none(pgd), "%#llx",
 			  (u64)v.val);
 		if (k != PGT_NONE && pgd_present(pgd) && !pgd_leaf(pgd))
-			PGT_CHECK((k == PGT_BAD) == !!pgd_bad(pgd), "%#llx",
-				  (u64)v.val);
+			pgt_check_table_rule(v, k, pgd_bad(pgd));
 		break;
 	}
 #endif
@@ -1910,8 +1928,8 @@ static void __init pgt_tests(struct pgtable_debug_args *args)
 	pgt_invalidate_tests(args);
 	pgt_lock_tests(args);
 	pgt_walk_tests(args);
-	pr_info("pgt: %lu checks, %lu failures, %lu fallback gaps\n",
-		pgt_checks, pgt_failures, pgt_gaps);
+	pr_info("pgt: %lu checks, %lu failures, %lu fallback gaps, %lu stricter than legacy\n",
+		pgt_checks, pgt_failures, pgt_gaps, pgt_stricter);
 }
 #else  /* !CONFIG_PGT */
 static void __init pgt_tests(struct pgtable_debug_args *args) { }
