@@ -8,10 +8,10 @@
  *
  * The contract is the set of pgt_arch_*() entry points below. A native
  * provider describes its entry format in a struct pgt_fmt table; the
- * default of every entry point is then derived from the table, and the
- * provider overrides only the hooks the table cannot express. The fallback
- * has no table and overrides every entry point; it is described in
- * Documentation/mm/pgt-legacy.rst.
+ * default of every entry point is then derived from the table, in
+ * <asm-generic/pgt-fmt.h>, and the provider overrides only the hooks the
+ * table cannot express. The fallback has no table and overrides every
+ * entry point; it is described in Documentation/mm/pgt-legacy.rst.
  *
  * Overriding follows the usual pattern: the provider defines the function
  * and "#define pgt_arch_foo pgt_arch_foo" before the default here is seen.
@@ -127,6 +127,13 @@ struct pgt_level_fmt {
  *              ptdesc, by bit; mm->page_table_lock otherwise.
  * @softleaf: layout of a software entry.
  * @softleaf_mbz: bits that must be clear in a software entry.
+ *
+ * A provider defines the table as "static const struct pgt_fmt pgt_fmt",
+ * so that reads at a constant level fold to constants. A field that is
+ * known only at boot is left out of the table and supplied by overriding
+ * its accessor in <asm-generic/pgt-fmt.h>: pgt_fmt_table_pfn_mask(),
+ * pgt_fmt_leaf_pfn_mask(), pgt_fmt_table_mask(), pgt_fmt_table_val() or
+ * pgt_fmt_table_flags().
  */
 struct pgt_fmt {
 	struct pgt_level_fmt lvl[PGT_MAX_LEVEL + 1];
@@ -138,10 +145,13 @@ struct pgt_fmt {
 	pgtval_t softleaf_mbz;
 };
 
+#define __pgtv(x, l)	((pgtv_t){ .val = (x), .lvl = (l) })
+
 #ifdef CONFIG_PGT_FALLBACK
 #include <asm-generic/pgt-fallback.h>
 #else
 #include <asm/pgt.h>
+#include <asm-generic/pgt-fmt.h>
 #endif
 
 /*
@@ -247,10 +257,8 @@ static __always_inline pgtval_t pgt_arch_xchg(struct mm_struct *mm,
  *
  * Return: the old raw value.
  */
-static __always_inline pgtval_t pgt_arch_invalidate(struct vm_area_struct *vma,
-						    unsigned long addr,
-						    void *ptr,
-						    unsigned int lvl);
+pgtval_t pgt_arch_invalidate(struct vm_area_struct *vma, unsigned long addr,
+			     void *ptr, unsigned int lvl);
 #endif
 
 #ifndef pgt_arch_populate
@@ -409,9 +417,8 @@ void pgt_arch_table_free(struct ptdesc *table, unsigned int lvl);
  *
  * Return: false if the split lock could not be allocated.
  */
-static __always_inline bool pgt_arch_table_ctor(struct mm_struct *mm,
-						struct ptdesc *table,
-						unsigned int lvl);
+bool pgt_arch_table_ctor(struct mm_struct *mm, struct ptdesc *table,
+			 unsigned int lvl);
 #endif
 
 #ifndef pgt_arch_table_dtor
@@ -422,8 +429,7 @@ static __always_inline bool pgt_arch_table_ctor(struct mm_struct *mm,
  *
  * Default: pagetable_dtor().
  */
-static __always_inline void pgt_arch_table_dtor(struct ptdesc *table,
-						unsigned int lvl);
+void pgt_arch_table_dtor(struct ptdesc *table, unsigned int lvl);
 #endif
 
 #ifndef pgt_arch_deposit
@@ -513,7 +519,7 @@ static __always_inline void pgt_arch_clear(struct mm_struct *mm,
  * pgt_arch_clear_bad() - Report and empty a BAD entry.
  * @p: entry pointer at level 1 or above.
  */
-static __always_inline void pgt_arch_clear_bad(pgtp_t p);
+void pgt_arch_clear_bad(pgtp_t p);
 #endif
 
 #ifndef pgt_arch_alloc_child
@@ -701,7 +707,7 @@ static __always_inline pgtv_t pgt_arch_none_mk(unsigned int lvl);
  * Return: the software entry of a SOFTLEAF value, the empty one
  * (softleaf_mk_none()) for any other kind.
  */
-static __always_inline softleaf_t pgt_arch_to_softleaf(pgtv_t v);
+softleaf_t pgt_arch_to_softleaf(pgtv_t v);
 #endif
 
 #ifndef pgt_arch_from_softleaf
@@ -712,8 +718,7 @@ static __always_inline softleaf_t pgt_arch_to_softleaf(pgtv_t v);
  *
  * Return: the SOFTLEAF value.
  */
-static __always_inline pgtv_t pgt_arch_from_softleaf(softleaf_t e,
-						     unsigned int lvl);
+pgtv_t pgt_arch_from_softleaf(softleaf_t e, unsigned int lvl);
 #endif
 
 #ifndef pgt_arch_child
@@ -751,8 +756,7 @@ static __always_inline unsigned long pgt_arch_addr_end(pgtp_t p,
  *
  * Return: the lock.
  */
-static __always_inline spinlock_t *pgt_arch_lockptr(struct mm_struct *mm,
-						    pgtp_t p);
+spinlock_t *pgt_arch_lockptr(struct mm_struct *mm, pgtp_t p);
 #endif
 
 #ifndef pgt_arch_leaf_batch
