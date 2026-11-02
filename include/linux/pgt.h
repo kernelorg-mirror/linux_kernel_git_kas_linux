@@ -483,6 +483,33 @@ static __always_inline bool pgtv_same(pgtv_t a, pgtv_t b)
 }
 
 /**
+ * pgtv_level() - Level of a value.
+ * @v: value.
+ *
+ * Return: the level of the entry @v was read from or built for.
+ */
+static __always_inline unsigned int pgtv_level(pgtv_t v)
+{
+	return v.lvl;
+}
+
+/**
+ * pgtv_raw() - The raw entry, for error reports.
+ * @v: value.
+ * @size: out: size of the raw entry in bytes.
+ *
+ * For reports that dump an entry as the hardware sees it, such as
+ * print_bad_page_map(). Nothing may interpret the bits.
+ *
+ * Return: pointer to the raw entry inside @v.
+ */
+static __always_inline const void *pgtv_raw(const pgtv_t *v, size_t *size)
+{
+	*size = sizeof(v->val);
+	return &v->val;
+}
+
+/**
  * pgt_none_mk() - Build a NONE value.
  * @lvl: level.
  *
@@ -857,6 +884,20 @@ static __always_inline pgt_leaf_t pgt_leaf_next(pgt_leaf_t l)
 	return l;
 }
 
+/**
+ * pgt_leaf_check_zapped() - Debug check of a leaf that was just removed.
+ * @vma: the VMA.
+ * @l: the leaf as it was.
+ *
+ * Catches leaves the architecture never expects to remove from @vma, such
+ * as an x86 shadow stack leaf outside a shadow stack VMA.
+ */
+static __always_inline void pgt_leaf_check_zapped(struct vm_area_struct *vma,
+						  pgt_leaf_t l)
+{
+	pgt_arch_check_zapped(vma, l.v);
+}
+
 /* Software entries */
 
 /**
@@ -1088,6 +1129,90 @@ do {									\
 unsigned int pgt_leaf_batch(struct folio *folio, pgtp_t p, pgt_leaf_t l,
 			    unsigned int max_nr);
 
+/**
+ * pgt_softleaf_batch() - Count swap entries for consecutive swap slots.
+ * @p: pointer to the first entry, at level 0.
+ * @s: snapshot of *@p, a swap entry.
+ * @max_nr: maximum number of entries to look at; must not cross the end
+ *          of the VMA or of the table.
+ *
+ * The entries of a batch differ from @s only in the swap offset, which
+ * grows by one from each to the next.
+ *
+ * Return: the number of entries in the batch, at least one.
+ */
+unsigned int pgt_softleaf_batch(pgtp_t p, pgt_softleaf_t s,
+				unsigned int max_nr);
+
+/**
+ * pgtp_get_and_clear_leaves() - Clear leaves and gather their state.
+ * @vma: the VMA the leaves map.
+ * @addr: address the first entry maps.
+ * @p: pointer to the first entry.
+ * @nr: number of entries; above one only at level 0, where they map
+ *      consecutive pages of one folio.
+ * @full: the whole address space is being torn down, so nothing else
+ *        uses the entries.
+ *
+ * The caller holds the lock of @p.
+ *
+ * Return: the first leaf as it was, dirty or young if any of them was.
+ */
+static __always_inline pgt_leaf_t
+pgtp_get_and_clear_leaves(struct vm_area_struct *vma, unsigned long addr,
+			  pgtp_t p, unsigned int nr, bool full)
+{
+	unsigned int lvl = pgtp_level(p);
+	pgtval_t val;
+
+	VM_WARN_ON_ONCE(lvl && nr != 1);
+	val = pgt_arch_get_and_clear_leaves(vma, addr, pgtp_ptr(p), lvl, nr,
+					    full);
+	return (pgt_leaf_t){ .v = __pgtv(val, lvl) };
+}
+
+/**
+ * pgtp_clear_leaves() - Clear leaves whose state is not needed.
+ * @vma: the VMA the leaves map.
+ * @addr: address the first entry maps.
+ * @p: pointer to the first entry.
+ * @nr: number of entries; above one only at level 0, where they map
+ *      consecutive pages of one folio.
+ * @full: the whole address space is being torn down.
+ *
+ * As pgtp_get_and_clear_leaves() without the result. The caller holds the
+ * lock of @p.
+ */
+static __always_inline void pgtp_clear_leaves(struct vm_area_struct *vma,
+					      unsigned long addr, pgtp_t p,
+					      unsigned int nr, bool full)
+{
+	unsigned int lvl = pgtp_level(p);
+
+	VM_WARN_ON_ONCE(lvl && nr != 1);
+	pgt_arch_clear_leaves(vma, addr, pgtp_ptr(p), lvl, nr, full);
+}
+
+/**
+ * pgtp_clear_softleaves() - Clear software entries.
+ * @vma: the VMA the entries are in.
+ * @addr: address the first entry maps.
+ * @p: pointer to the first entry.
+ * @nr: number of entries; above one only at level 0.
+ * @full: the whole address space is being torn down.
+ *
+ * The caller holds the lock of @p.
+ */
+static __always_inline void pgtp_clear_softleaves(struct vm_area_struct *vma,
+						  unsigned long addr, pgtp_t p,
+						  unsigned int nr, bool full)
+{
+	unsigned int lvl = pgtp_level(p);
+
+	VM_WARN_ON_ONCE(lvl && nr != 1);
+	pgt_arch_clear_softleaves(vma, addr, pgtp_ptr(p), lvl, nr, full);
+}
+
 /* TLB; macros because they expand to the <asm/tlb.h> helpers */
 
 /**
@@ -1098,6 +1223,31 @@ unsigned int pgt_leaf_batch(struct folio *folio, pgtp_t p, pgt_leaf_t l,
  */
 #define tlb_remove_pgt_entry(tlb, p, addr)				\
 	pgt_arch_tlb_remove_entry(tlb, p, addr)
+
+/**
+ * tlb_remove_pgt_entries() - Record cleared consecutive leaves for the flush.
+ * @tlb: the mmu_gather.
+ * @p: pointer to the first cleared entry.
+ * @nr: number of entries; above one only at level 0.
+ * @addr: address the first entry mapped.
+ */
+#define tlb_remove_pgt_entries(tlb, p, nr, addr)			\
+	pgt_arch_tlb_remove_entries(tlb, p, nr, addr)
+
+/**
+ * tlb_remove_pgt_pages() - Free the pages of cleared leaves after the flush.
+ * @tlb: the mmu_gather.
+ * @p: pointer to the first cleared entry.
+ * @page: the first page the leaves mapped.
+ * @nr: number of entries; above one only at level 0.
+ * @delay_rmap: remove the rmap after the flush too; only at level 0.
+ *
+ * Return: true if the batch is full and the caller must flush.
+ */
+#define tlb_remove_pgt_pages(tlb, p, page, nr, delay_rmap)		\
+	(pgtp_level(p) ?						\
+	 __tlb_remove_page_size(tlb, page, pgtp_size(p)) :		\
+	 __tlb_remove_folio_pages(tlb, page, nr, delay_rmap))
 
 /**
  * tlb_remove_pgt_table() - Free an unlinked table after the TLB flush.

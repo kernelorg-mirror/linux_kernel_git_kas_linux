@@ -397,6 +397,27 @@ static __always_inline void pgt_arch_store_softleaf(struct mm_struct *mm,
 	}
 }
 
+#define pgt_arch_check_zapped pgt_arch_check_zapped
+static __always_inline void pgt_arch_check_zapped(struct vm_area_struct *vma,
+						  pgtv_t v)
+{
+	switch (v.lvl) {
+	case 0:
+		arch_check_zapped_pte(vma, __pgt_pte(v));
+		break;
+	case 1:
+		arch_check_zapped_pmd(vma, __pgt_pmd(v));
+		break;
+#if CONFIG_PGTABLE_LEVELS > 2
+	case 2:
+		arch_check_zapped_pud(vma, __pgt_pud(v));
+		break;
+#endif
+	default:
+		break;
+	}
+}
+
 #define pgt_arch_invalidate pgt_arch_invalidate
 static __always_inline pgtval_t pgt_arch_invalidate(struct vm_area_struct *vma,
 						    unsigned long addr,
@@ -538,6 +559,82 @@ static __always_inline pgtval_t pgt_arch_xchg(struct mm_struct *mm,
 	else if (kind != PGT_NONE)
 		WARN_ON_ONCE(1);
 	return old;
+}
+
+/*
+ * Clearing a leaf, or above level 0 a software entry, for zap. Level 0 has
+ * batched full-mm variants, which arm64 overrides for its contiguous
+ * blocks. Above it the huge variants take the VMA: powerpc flushes the TLB
+ * at once unless the whole mm goes, and s390 skips the exchange when it
+ * does.
+ */
+static __always_inline pgtval_t
+__pgt_get_and_clear_full(struct vm_area_struct *vma, unsigned long addr,
+			 void *ptr, unsigned int lvl, bool full)
+{
+	switch (lvl) {
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	case 1:
+		return pmd_val(pmdp_huge_get_and_clear_full(vma, addr, ptr,
+							    full));
+#if CONFIG_PGTABLE_LEVELS > 2
+	case 2:
+		return pud_val(pudp_huge_get_and_clear_full(vma, addr, ptr,
+							    full));
+#endif
+#endif
+	default:
+		return pgt_arch_xchg(vma->vm_mm, addr, ptr, 0, lvl);
+	}
+}
+
+#define pgt_arch_get_and_clear_leaves pgt_arch_get_and_clear_leaves
+static __always_inline pgtval_t
+pgt_arch_get_and_clear_leaves(struct vm_area_struct *vma, unsigned long addr,
+			      void *ptr, unsigned int lvl, unsigned int nr,
+			      bool full)
+{
+	if (!lvl) {
+		pte_t pte = get_and_clear_full_ptes(vma->vm_mm, addr, ptr, nr,
+						    full);
+
+		return pte_val(pte);
+	}
+	return __pgt_get_and_clear_full(vma, addr, ptr, lvl, full);
+}
+
+#define pgt_arch_clear_leaves pgt_arch_clear_leaves
+static __always_inline void pgt_arch_clear_leaves(struct vm_area_struct *vma,
+						  unsigned long addr,
+						  void *ptr, unsigned int lvl,
+						  unsigned int nr, bool full)
+{
+	if (!lvl) {
+		clear_full_ptes(vma->vm_mm, addr, ptr, nr, full);
+		return;
+	}
+	__pgt_get_and_clear_full(vma, addr, ptr, lvl, full);
+}
+
+#define pgt_arch_clear_softleaves pgt_arch_clear_softleaves
+static __always_inline void
+pgt_arch_clear_softleaves(struct vm_area_struct *vma, unsigned long addr,
+			  void *ptr, unsigned int lvl, unsigned int nr,
+			  bool full)
+{
+	pte_t *ptep = ptr;
+
+	if (lvl) {
+		__pgt_get_and_clear_full(vma, addr, ptr, lvl, full);
+		return;
+	}
+	for (;;) {
+		pte_clear(vma->vm_mm, addr, ptep);
+		if (--nr == 0)
+			break;
+		ptep++;
+		addr += PAGE_SIZE;
+	}
 }
 
 /* Values */
@@ -1074,6 +1171,9 @@ softleaf_t pgt_arch_to_softleaf(pgtv_t v);
 #define pgt_arch_from_softleaf pgt_arch_from_softleaf
 pgtv_t pgt_arch_from_softleaf(softleaf_t e, unsigned int lvl);
 
+#define pgt_arch_softleaf_next pgt_arch_softleaf_next
+pgtv_t pgt_arch_softleaf_next(pgtv_t v);
+
 /* Tables */
 
 #define pgt_arch_clear_bad pgt_arch_clear_bad
@@ -1147,6 +1247,19 @@ do {									\
 		__pgt_tlb_remove_pud_entry(__tlb, __p, __addr);		\
 		break;							\
 	}								\
+} while (0)
+
+#define pgt_arch_tlb_remove_entries(tlb, p, nr, addr)			\
+do {									\
+	struct mmu_gather *__tlbe = (tlb);				\
+	unsigned long __addre = (addr);					\
+	pgtp_t __pe = (p);						\
+									\
+	if (!pgtp_level(__pe))						\
+		tlb_remove_tlb_entries(__tlbe, (pte_t *)pgtp_ptr(__pe),	\
+				       nr, __addre);			\
+	else								\
+		pgt_arch_tlb_remove_entry(__tlbe, __pe, __addre);	\
 } while (0)
 
 /*

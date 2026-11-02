@@ -236,6 +236,16 @@ mirroring of the top level, page table check, hypervisor hooks).
 ``pgtp_set_leaf_nr()`` stores ``nr`` consecutive leaves mapping
 consecutive memory; ``nr`` above one is only valid at level 0.
 
+``pgtp_get_and_clear_leaves(vma, addr, p, nr, full)`` clears ``nr`` leaves
+and returns the first as it was, dirty or young if any of them was;
+``pgtp_clear_leaves()`` does the same when that state is not needed, and
+``pgtp_clear_softleaves()`` clears software entries. ``full`` says the
+whole address space is being torn down, so that nothing else uses the
+entries. They take the VMA because an architecture may flush or skip work
+depending on it above level 0. ``pgt_leaf_check_zapped(vma, l)`` is the
+debug check of a removed leaf, such as a shadow stack leaf outside a
+shadow stack VMA.
+
 ``pgtp_invalidate()`` is defined above level 0: the entry stays a LEAF the
 hardware can no longer use, the TLB is flushed for its range, and the old
 leaf is returned with every accessed and dirty bit the hardware set until
@@ -249,10 +259,14 @@ links the table or frees it. On return ``v`` is a fresh snapshot of ``*p``.
 ``pgtp_clear_bad(p)`` reports and clears a BAD entry.
 
 ``tlb_remove_pgt_entry(tlb, p, addr)`` records a cleared leaf for the TLB
-flush. ``tlb_remove_pgt_table(tlb, t, addr)`` frees, after the flush, the
-table that the table entry ``t`` linked before the entry was cleared, and
-drops the mm's accounting for it. Both are macros, since they expand to the
-``<asm/tlb.h>`` helpers.
+flush, ``tlb_remove_pgt_entries(tlb, p, nr, addr)`` ``nr`` consecutive
+level-0 ones. ``tlb_remove_pgt_pages(tlb, p, page, nr, delay_rmap)`` queues
+the pages the cleared leaves mapped for freeing after the flush; only at
+level 0 can the rmap removal wait for the flush too. It returns true when
+the batch is full. ``tlb_remove_pgt_table(tlb, t, addr)`` frees, after the
+flush, the table that the table entry ``t`` linked before the entry was
+cleared, and drops the mm's accounting for it. They are macros, since they
+expand to the ``<asm/tlb.h>`` helpers.
 
 Values
 ------
@@ -279,11 +293,15 @@ the memory a leaf maps. ``pgt_leaf_next(l)`` advances the PFN by the size
 of the leaf. ``pgt_leaf_batch()`` counts the level-0 entries from a pointer
 that map consecutive pages of one folio and differ from the first only in
 the PFN and the accessed, writable, dirty and soft-dirty state.
+``pgt_softleaf_batch()`` counts the swap entries from a pointer for
+consecutive swap slots that differ from the first only in the offset.
 
 ``pgtv_same(a, b)`` compares two values of any kind at the same level as
 ``pte_same()`` does: bit for bit, except for bits that only the
 architecture's own bookkeeping changes, such as the hash bits on powerpc.
 ``pgtp_size(p)`` is the size of the range an entry covers.
+``pgtv_level(v)`` is the level of a value, and ``pgtv_raw(v, &size)``
+exposes the raw entry for error reports that dump it, and for nothing else.
 
 ``pgt_none_mk(lvl)`` builds a NONE value and ``pgt_table_mk(table, lvl)`` a
 table entry linking ``table``.
@@ -561,44 +579,52 @@ and an architecture overrides it with the usual pattern::
   #define pgt_arch_store_leaf pgt_arch_store_leaf
   static inline void pgt_arch_store_leaf(...)
 
-==============================  ======================================  ===========================
-Hook                            Default                                 Overridden for
-==============================  ======================================  ===========================
-``pgt_arch_load()``             ``READ_ONCE()`` of the entry width      paravirt (x86)
-``pgt_arch_load_lockless()``    ``pgt_arch_load()``                     halves (32-bit), contiguous
-                                                                        blocks (arm64)
-``pgt_arch_store_leaf()``       plain store of ``nr`` entries           paravirt, PTI mirror (x86)
-``pgt_arch_store_softleaf()``   plain store                             paravirt (x86)
-``pgt_arch_xchg()``             ``xchg()``                              paravirt, page table check
-                                                                        (x86)
-``pgt_arch_invalidate()``       exchange with the invalid encoding,     own invalidate sequence
-                                flush the range
-``pgt_arch_populate()``         store ``pgt_table_mk()``                Xen PV table pinning (x86)
-``pgt_arch_root_table()``       ``mm->pgd``                             PTI, TTBR, ASCE selection
-``pgt_arch_root_level()``       ``PGT_MAX_LEVEL``                       5-level paging (x86)
-``pgt_arch_mkwrite()``          set ``bit[WRITE]``, move saved-dirty    shadow stack (x86), DBM
-                                to dirty                                (arm64)
-``pgt_arch_mkdirty()``          from ``bit[]``                          shadow stack (x86)
-``pgt_arch_wrprotect()``        from ``bit[]``                          shadow stack (x86)
-``pgt_arch_write()``            ``bit[WRITE]``                          shadow stack (x86)
-``pgt_arch_accessible()``       valid, user and, for a write,           protection keys (x86)
-                                ``pgt_arch_write()``
-``pgt_arch_pfn_inverted()``     false                                   L1TF (x86)
-``pgt_arch_table_alloc()``      ``pagetable_alloc()``, filled with
-                                ``none_val``
-``pgt_arch_table_free()``       ``pagetable_free()``
-``pgt_arch_table_ctor()``       the ptdesc constructors
-``pgt_arch_table_dtor()``       ``pagetable_dtor()``
-``pgt_arch_deposit()``          the generic deposit list                ppc hash, s390
-``pgt_arch_withdraw()``         the generic deposit list                ppc hash, s390
-==============================  ======================================  ===========================
+===================================  ======================================  ===========================
+Hook                                 Default                                 Overridden for
+===================================  ======================================  ===========================
+``pgt_arch_load()``                  ``READ_ONCE()`` of the entry width      paravirt (x86)
+``pgt_arch_load_lockless()``         ``pgt_arch_load()``                     halves (32-bit), contiguous
+                                                                             blocks (arm64)
+``pgt_arch_store_leaf()``            plain store of ``nr`` entries           paravirt, PTI mirror (x86)
+``pgt_arch_store_softleaf()``        plain store                             paravirt (x86)
+``pgt_arch_xchg()``                  ``xchg()``                              paravirt, page table check
+                                                                             (x86)
+``pgt_arch_get_and_clear()``         ``pgt_arch_xchg()`` with NONE           full-mm teardown (x86)
+``pgt_arch_get_and_clear_leaves()``  ``pgt_arch_get_and_clear()`` on each    contiguous blocks (arm64)
+                                     entry, accessed and dirty merged
+``pgt_arch_clear_leaves()``          ``pgt_arch_get_and_clear()`` on each    contiguous blocks (arm64)
+                                     entry
+``pgt_arch_clear_softleaves()``      ``pgt_arch_clear()`` on each entry
+``pgt_arch_check_zapped()``          nothing                                 shadow stack (x86)
+``pgt_arch_softleaf_next()``         the offset field moves by one
+``pgt_arch_invalidate()``            exchange with the invalid encoding,     own invalidate sequence
+                                     flush the range
+``pgt_arch_populate()``              store ``pgt_table_mk()``                Xen PV table pinning (x86)
+``pgt_arch_root_table()``            ``mm->pgd``                             PTI, TTBR, ASCE selection
+``pgt_arch_root_level()``            ``PGT_MAX_LEVEL``                       5-level paging (x86)
+``pgt_arch_mkwrite()``               set ``bit[WRITE]``, move saved-dirty    shadow stack (x86), DBM
+                                     to dirty                                (arm64)
+``pgt_arch_mkdirty()``               from ``bit[]``                          shadow stack (x86)
+``pgt_arch_wrprotect()``             from ``bit[]``                          shadow stack (x86)
+``pgt_arch_write()``                 ``bit[WRITE]``                          shadow stack (x86)
+``pgt_arch_accessible()``            valid, user and, for a write,           protection keys (x86)
+                                     ``pgt_arch_write()``
+``pgt_arch_pfn_inverted()``          false                                   L1TF (x86)
+``pgt_arch_table_alloc()``           ``pagetable_alloc()``, filled with
+                                     ``none_val``
+``pgt_arch_table_free()``            ``pagetable_free()``
+``pgt_arch_table_ctor()``            the ptdesc constructors
+``pgt_arch_table_dtor()``            ``pagetable_dtor()``
+``pgt_arch_deposit()``               the generic deposit list                ppc hash, s390
+``pgt_arch_withdraw()``              the generic deposit list                ppc hash, s390
+===================================  ======================================  ===========================
 
 TLB and cache maintenance stay with the existing hooks:
 ``flush_tlb_range()``, ``update_mmu_cache_range()``, ``tlb_remove_table()``
-and ``arch_sync_kernel_mappings()``. Recording a cleared leaf and freeing
+and ``arch_sync_kernel_mappings()``. Recording cleared leaves and freeing
 an unlinked table for ``mmu_gather`` are the macros
-``pgt_arch_tlb_remove_entry()`` and ``pgt_arch_tlb_remove_table()``, with
-no generic default.
+``pgt_arch_tlb_remove_entry()``, ``pgt_arch_tlb_remove_entries()`` and
+``pgt_arch_tlb_remove_table()``, with no generic default.
 
 A coupled bit rule, where the meaning of one bit depends on another, is a
 hook and not a table entry: the format table has no interpreter.
@@ -619,8 +645,10 @@ about the new table before it is linked. ``mkwrite``, ``mkdirty``,
 ``wrprotect`` and ``write`` implement the shadow stack rules around
 ``_PAGE_SAVED_DIRTY``. ``mk``, ``pgprot`` and ``modify`` move the PAT bit.
 ``accessible`` checks protection keys. ``pfn_inverted`` implements the L1TF
-rule. ``root_level`` follows ``pgtable_l5_enabled()``. The root table is
-not allocated through pgt.
+rule. ``root_level`` follows ``pgtable_l5_enabled()``. ``get_and_clear``
+clears a PTE of an mm being torn down without the atomic exchange, and
+``check_zapped`` is the shadow stack check of ``arch_check_zapped_pte()``.
+The root table is not allocated through pgt.
 
 The rules that depend on more than one bit are written once, on a raw
 value of any level, in ``<asm/pgt-rules.h>``: L1TF inversion, the shadow

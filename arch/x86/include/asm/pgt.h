@@ -470,6 +470,29 @@ static __always_inline pgtval_t pgt_arch_xchg(struct mm_struct *mm,
 	return old;
 }
 
+/*
+ * Tearing down a whole mm needs no atomic exchange of a PTE: nothing else
+ * uses it, and the paravirt operations do not care, as with
+ * ptep_get_and_clear_full().
+ */
+#define pgt_arch_get_and_clear pgt_arch_get_and_clear
+static __always_inline pgtval_t pgt_arch_get_and_clear(struct mm_struct *mm,
+						       unsigned long addr,
+						       void *ptr,
+						       unsigned int lvl,
+						       bool full)
+{
+	pgtval_t old;
+
+	if (!full || lvl != PGT_X86_PT)
+		return pgt_arch_xchg(mm, addr, ptr, 0, lvl);
+	old = READ_ONCE(*(pgtval_t *)ptr);
+	WRITE_ONCE(*(pgtval_t *)ptr, 0);
+	old = __pgt_x86_from_raw(old, lvl);
+	__pgt_x86_check_clear(mm, addr, old, lvl);
+	return old;
+}
+
 /* Out of line: it builds the entry with the default pgt_arch_table_entry() */
 #define pgt_arch_populate pgt_arch_populate
 void pgt_arch_populate(struct mm_struct *mm, void *ptr, struct ptdesc *table,
@@ -567,8 +590,18 @@ static __always_inline bool pgt_arch_write(pgtv_t v)
 	return (v.val & (_PAGE_RW | _PAGE_DIRTY)) == _PAGE_DIRTY;
 }
 
-/* Out of line: the shadow stack test needs the VMA flags of <linux/mm.h> */
+/* Out of line: the shadow stack tests need the VMA flags of <linux/mm.h> */
 pgtval_t pgt_x86_mkwrite_vma(pgtval_t val, struct vm_area_struct *vma);
+void pgt_x86_check_zapped(struct vm_area_struct *vma, pgtv_t v);
+
+/* As arch_check_zapped_pte(): a debug check only */
+#define pgt_arch_check_zapped pgt_arch_check_zapped
+static __always_inline void pgt_arch_check_zapped(struct vm_area_struct *vma,
+						  pgtv_t v)
+{
+	if (IS_ENABLED(CONFIG_DEBUG_VM))
+		pgt_x86_check_zapped(vma, v);
+}
 
 #define pgt_arch_mkwrite pgt_arch_mkwrite
 static __always_inline pgtv_t pgt_arch_mkwrite(pgtv_t v,
@@ -629,6 +662,19 @@ do {									\
 					 __addr);			\
 		break;							\
 	}								\
+} while (0)
+
+#define pgt_arch_tlb_remove_entries(tlb, p, nr, addr)			\
+do {									\
+	struct mmu_gather *__tlbe = (tlb);				\
+	unsigned long __addre = (addr);					\
+	pgtp_t __pe = (p);						\
+									\
+	if (pgtp_level(__pe) == PGT_X86_PT)				\
+		tlb_remove_tlb_entries(__tlbe, (pte_t *)pgtp_ptr(__pe),	\
+				       nr, __addre);			\
+	else								\
+		pgt_arch_tlb_remove_entry(__tlbe, __pe, __addre);	\
 } while (0)
 
 #define pgt_arch_tlb_remove_table(tlb, v, addr)				\

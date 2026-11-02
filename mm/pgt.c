@@ -269,3 +269,18 @@ pgtp_t pgt_iter_ptp(struct pgt_iter *it)
 {
 	return it->path[it->lvl];
 }
+
+unsigned int pgt_softleaf_batch(pgtp_t p, pgt_softleaf_t s,
+				unsigned int max_nr)
+{
+	pgtv_t expected = pgt_arch_softleaf_next(s.v);
+	unsigned int nr;
+
+	for (nr = 1; nr < max_nr; nr++) {
+		p = pgtp_next(p);
+		if (!pgtv_same(pgtp_get(p), expected))
+			break;
+		expected = pgt_arch_softleaf_next(expected);
+	}
+	return nr;
+}
