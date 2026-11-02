@@ -688,6 +688,32 @@ static inline bool folio_needs_release(struct folio *folio)
 
 extern unsigned long highest_memmap_pfn;
 
+static inline void init_rss_vec(int *rss)
+{
+	memset(rss, 0, sizeof(int) * NR_MM_COUNTERS);
+}
+
+static inline void add_mm_rss_vec(struct mm_struct *mm, int *rss)
+{
+	int i;
+
+	for (i = 0; i < NR_MM_COUNTERS; i++)
+		if (rss[i])
+			add_mm_counter(mm, i, rss[i]);
+}
+
+void print_bad_page_map(struct vm_area_struct *vma,
+		unsigned long addr, const void *entry, size_t entry_size,
+		struct page *page, enum pgtable_level level);
+
+static inline void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
+			  pte_t pte, struct page *page)
+{
+	auto entry = pte_val(pte);
+
+	print_bad_page_map(vma, addr, &entry, sizeof(entry), page, PGTABLE_LEVEL_PTE);
+}
+
 /*
  * Maximum number of reclaim retries without progress before the OOM
  * killer is consider the only way forward.
