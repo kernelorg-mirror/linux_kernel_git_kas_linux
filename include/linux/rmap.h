@@ -426,6 +426,37 @@ void folio_remove_rmap_pmd(struct folio *, struct page *,
 void folio_remove_rmap_pud(struct folio *, struct page *,
 		struct vm_area_struct *);
 
+/**
+ * folio_remove_rmap - remove leaf mappings of a page range of a folio
+ * @folio:	The folio to remove the mappings from
+ * @page:	The first page to remove
+ * @nr_pages:	The number of pages that will be removed from the mapping
+ * @vma:	The vm area from which the mappings are removed
+ * @level:	The page table level of the mappings
+ *
+ * As folio_remove_rmap_ptes(), folio_remove_rmap_pmd() and
+ * folio_remove_rmap_pud(), for a caller that handles every level. Above
+ * the PTE level @nr_pages covers the whole folio.
+ */
+static inline void folio_remove_rmap(struct folio *folio, struct page *page,
+		int nr_pages, struct vm_area_struct *vma,
+		enum pgtable_level level)
+{
+	switch (level) {
+	case PGTABLE_LEVEL_PTE:
+		folio_remove_rmap_ptes(folio, page, nr_pages, vma);
+		break;
+	case PGTABLE_LEVEL_PMD:
+		folio_remove_rmap_pmd(folio, page, vma);
+		break;
+	case PGTABLE_LEVEL_PUD:
+		folio_remove_rmap_pud(folio, page, vma);
+		break;
+	default:
+		WARN_ON_ONCE(1);
+	}
+}
+
 void hugetlb_add_anon_rmap(struct folio *, struct vm_area_struct *,
 		unsigned long address, rmap_t flags);
 void hugetlb_add_new_anon_rmap(struct folio *, struct vm_area_struct *,
