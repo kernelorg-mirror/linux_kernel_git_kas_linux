@@ -195,4 +195,8 @@ extern unsigned int ptrs_per_p4d;
  */
 #define _PAGE_SWP_EXCLUSIVE	_PAGE_PWT
 
+/* Swap entry layout, described in <asm/pgtable_64.h> */
+#define SWP_TYPE_BITS		5
+#define SWP_OFFSET_FIRST_BIT	(_PAGE_BIT_PROTNONE + 1)
+
 #endif /* _ASM_X86_PGTABLE_64_DEFS_H */

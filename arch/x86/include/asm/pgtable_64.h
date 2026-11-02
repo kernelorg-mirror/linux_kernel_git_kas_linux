@@ -208,9 +208,7 @@ static inline void native_pgd_clear(pgd_t *pgd)
  * The offset is inverted by a binary not operation to make the high
  * physical bits set.
  */
-#define SWP_TYPE_BITS		5
-
-#define SWP_OFFSET_FIRST_BIT	(_PAGE_BIT_PROTNONE + 1)
+/* SWP_TYPE_BITS and SWP_OFFSET_FIRST_BIT are in <asm/pgtable_64_types.h> */
 
 /* We always extract/encode the offset by shifting it all the way up, and then down again */
 #define SWP_OFFSET_SHIFT	(SWP_OFFSET_FIRST_BIT+SWP_TYPE_BITS)

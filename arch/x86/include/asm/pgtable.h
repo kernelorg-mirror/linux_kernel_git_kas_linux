@@ -19,6 +19,7 @@
 #include <linux/spinlock.h>
 #include <asm/x86_init.h>
 #include <asm/pkru.h>
+#include <asm/pgt-rules.h>
 #include <asm/fpu/api.h>
 #include <asm/coco.h>
 #include <asm-generic/pgtable_uffd.h>
@@ -351,35 +352,15 @@ static inline pte_t pte_clear_flags(pte_t pte, pteval_t clear)
 	return native_make_pte(v & ~clear);
 }
 
-/*
- * Write protection operations can result in Dirty=1,Write=0 PTEs. But in the
- * case of X86_FEATURE_USER_SHSTK, these PTEs denote shadow stack memory. So
- * when creating dirty, write-protected memory, a software bit is used:
- * _PAGE_BIT_SAVED_DIRTY. The following functions take a PTE and transition the
- * Dirty bit to SavedDirty, and vice-vesra.
- *
- * This shifting is only done if needed. In the case of shifting
- * Dirty->SavedDirty, the condition is if the PTE is Write=0. In the case of
- * shifting SavedDirty->Dirty, the condition is Write=1.
- */
+/* The shadow stack Dirty <-> SavedDirty rule is in <asm/pgt-rules.h> */
 static inline pgprotval_t mksaveddirty_shift(pgprotval_t v)
 {
-	pgprotval_t cond = (~v >> _PAGE_BIT_RW) & 1;
-
-	v |= ((v >> _PAGE_BIT_DIRTY) & cond) << _PAGE_BIT_SAVED_DIRTY;
-	v &= ~(cond << _PAGE_BIT_DIRTY);
-
-	return v;
+	return pgt_x86_mksaveddirty(v);
 }
 
 static inline pgprotval_t clear_saveddirty_shift(pgprotval_t v)
 {
-	pgprotval_t cond = (v >> _PAGE_BIT_RW) & 1;
-
-	v |= ((v >> _PAGE_BIT_SAVED_DIRTY) & cond) << _PAGE_BIT_DIRTY;
-	v &= ~(cond << _PAGE_BIT_SAVED_DIRTY);
-
-	return v;
+	return pgt_x86_clear_saveddirty(v);
 }
 
 static inline pte_t pte_mksaveddirty(pte_t pte)
@@ -1591,49 +1572,20 @@ static inline pmd_t pmd_swp_clear_uffd(pmd_t pmd)
 }
 #endif /* CONFIG_HAVE_ARCH_USERFAULTFD_WP */
 
+/* The protection key rules are in <asm/pgt-rules.h> */
 static inline u16 pte_flags_pkey(unsigned long pte_flags)
 {
-#ifdef CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS
-	/* ifdef to avoid doing 59-bit shift on 32-bit values */
-	return (pte_flags & _PAGE_PKEY_MASK) >> _PAGE_BIT_PKEY_BIT0;
-#else
-	return 0;
-#endif
+	return pgt_x86_pkey(pte_flags);
 }
 
 static inline bool __pkru_allows_pkey(u16 pkey, bool write)
 {
-	u32 pkru = read_pkru();
-
-	if (!__pkru_allows_read(pkru, pkey))
-		return false;
-	if (write && !__pkru_allows_write(pkru, pkey))
-		return false;
-
-	return true;
+	return pgt_x86_pkru_allows(pkey, write);
 }
 
-/*
- * 'pteval' can come from a PTE, PMD or PUD.  We only check
- * _PAGE_PRESENT, _PAGE_USER, and _PAGE_RW in here which are the
- * same value on all 3 types.
- */
 static inline bool __pte_access_permitted(unsigned long pteval, bool write)
 {
-	unsigned long need_pte_bits = _PAGE_PRESENT|_PAGE_USER;
-
-	/*
-	 * Write=0,Dirty=1 PTEs are shadow stack, which the kernel
-	 * shouldn't generally allow access to, but since they
-	 * are already Write=0, the below logic covers both cases.
-	 */
-	if (write)
-		need_pte_bits |= _PAGE_RW;
-
-	if ((pteval & need_pte_bits) != need_pte_bits)
-		return 0;
-
-	return __pkru_allows_pkey(pte_flags_pkey(pteval), write);
+	return pgt_x86_access_permitted(pteval, write);
 }
 
 #define pte_access_permitted pte_access_permitted

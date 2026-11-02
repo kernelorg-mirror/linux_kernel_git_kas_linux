@@ -134,8 +134,10 @@ static int __init pti_parse_cmdline_nopti(char *arg)
 }
 early_param("nopti", pti_parse_cmdline_nopti);
 
-pgd_t __pti_set_user_pgtbl(pgd_t *pgdp, pgd_t pgd)
+u64 __pgt_x86_pti_set_user(void *ptr, u64 val)
 {
+	pgd_t *pgdp = ptr;
+
 	/*
 	 * Changes to the high (kernel) portion of the kernelmode page
 	 * tables are not automatically propagated to the usermode tables.
@@ -145,14 +147,14 @@ pgd_t __pti_set_user_pgtbl(pgd_t *pgdp, pgd_t pgd)
 	 * Top-level entries added to init_mm's usermode pgd after boot
 	 * will not be automatically propagated to other mms.
 	 */
-	if (!pgdp_maps_userspace(pgdp) || (pgd.pgd & _PAGE_NOPTISHADOW))
-		return pgd;
+	if (!pgdp_maps_userspace(pgdp) || (val & _PAGE_NOPTISHADOW))
+		return val;
 
 	/*
 	 * The user page tables get the full PGD, accessible from
 	 * userspace:
 	 */
-	kernel_to_user_pgdp(pgdp)->pgd = pgd.pgd;
+	kernel_to_user_pgdp(pgdp)->pgd = val;
 
 	/*
 	 * If this is normal user memory, make it NX in the kernel
@@ -167,12 +169,17 @@ pgd_t __pti_set_user_pgtbl(pgd_t *pgdp, pgd_t pgd)
 	 *  - we don't have NX support
 	 *  - we're clearing the PGD (i.e. the new pgd is not present).
 	 */
-	if ((pgd.pgd & (_PAGE_USER|_PAGE_PRESENT)) == (_PAGE_USER|_PAGE_PRESENT) &&
+	if ((val & (_PAGE_USER|_PAGE_PRESENT)) == (_PAGE_USER|_PAGE_PRESENT) &&
 	    (__supported_pte_mask & _PAGE_NX))
-		pgd.pgd |= _PAGE_NX;
+		val |= _PAGE_NX;
 
 	/* return the copy of the PGD we want the kernel to use: */
-	return pgd;
+	return val;
+}
+
+pgd_t __pti_set_user_pgtbl(pgd_t *pgdp, pgd_t pgd)
+{
+	return native_make_pgd(__pgt_x86_pti_set_user(pgdp, native_pgd_val(pgd)));
 }
 
 /*
