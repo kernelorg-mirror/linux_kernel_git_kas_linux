@@ -4,6 +4,7 @@
 #include <linux/sched.h>
 #include <linux/hugetlb.h>
 #include <linux/mmu_context.h>
+#include <linux/pgt-walk.h>
 #include <linux/swap.h>
 
 #include <asm/tlbflush.h>
@@ -283,6 +284,10 @@ static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
 	return err;
 }
 
+/*
+ * The per-level walk above serves walks without a VMA: kernel page tables,
+ * whose entries pgt does not cover yet, and debug walks of a given PGD.
+ */
 static int walk_pgd_range(unsigned long addr, unsigned long end,
 			  struct mm_walk *walk)
 {
@@ -322,6 +327,241 @@ static int walk_pgd_range(unsigned long addr, unsigned long end,
 	} while (pgd++, addr = next, addr != end);
 
 	return err;
+}
+
+/*
+ * Walks of the page tables of a VMA go through pgt. The mm_walk_ops
+ * callbacks are typed by the per-level helper families, and pgt level n is
+ * the n-th family counted from the leaf: level 1 is the PMD, level 4 the
+ * PGD. Families above the root level are folded; their callbacks see the
+ * root entry, as they do with the per-level helpers.
+ */
+#define PAGEWALK_TOP	4
+
+struct pagewalk_pgt {
+	struct mm_walk *walk;
+	int err;
+};
+
+static int pagewalk_entry(struct mm_walk *walk, void *ptr, unsigned int lvl,
+			  unsigned long addr, unsigned long next)
+{
+	const struct mm_walk_ops *ops = walk->ops;
+
+	switch (lvl) {
+	case 1:
+		return ops->pmd_entry ? ops->pmd_entry(ptr, addr, next, walk) : 0;
+	case 2:
+		return ops->pud_entry ? ops->pud_entry(ptr, addr, next, walk) : 0;
+	case 3:
+		return ops->p4d_entry ? ops->p4d_entry(ptr, addr, next, walk) : 0;
+	default:
+		return ops->pgd_entry ? ops->pgd_entry(ptr, addr, next, walk) : 0;
+	}
+}
+
+/* Whether a callback below @lvl needs the walk to go down */
+static bool pagewalk_has_lower(const struct mm_walk_ops *ops, unsigned int lvl)
+{
+	bool lower = ops->pte_entry;
+
+	if (lvl > 1)
+		lower |= !!ops->pmd_entry;
+	if (lvl > 2)
+		lower |= !!ops->pud_entry;
+	if (lvl > 3)
+		lower |= !!ops->p4d_entry;
+	return lower;
+}
+
+/*
+ * The callbacks of the families folded above the root, for a root entry.
+ * They run for empty entries too: a folded level's none test is false. A
+ * folded PUD still takes ACTION_* from its callback, as the PUD level does.
+ */
+static int pagewalk_folded(struct mm_walk *walk, void *ptr, unsigned int root,
+			   unsigned long addr, unsigned long next, bool *descend)
+{
+	const struct mm_walk_ops *ops = walk->ops;
+	unsigned int f;
+	int err;
+
+	for (f = PAGEWALK_TOP; f > root; f--) {
+again:
+		if (f == 2)
+			walk->action = ACTION_SUBTREE;
+		err = pagewalk_entry(walk, ptr, f, addr, next);
+		if (err)
+			return err;
+		if (f == 2 && walk->action == ACTION_AGAIN)
+			goto again;
+		if ((f == 2 && walk->action == ACTION_CONTINUE) ||
+		    (!pagewalk_has_lower(ops, f) && !ops->install_pte)) {
+			*descend = false;
+			break;
+		}
+	}
+	return 0;
+}
+
+static unsigned long pagewalk_ptes(struct pagewalk_pgt *pw, pgtp_t p,
+				   pgtp_t pp, unsigned long addr,
+				   unsigned long end)
+{
+	struct mm_walk *walk = pw->walk;
+	const struct mm_walk_ops *ops = walk->ops;
+	pgtp_t first = p;
+	spinlock_t *ptl;
+	int err = 0;
+	pte_t *pte;
+
+	ptl = pgtp_lock_table(walk->mm, p, pp);
+	if (!ptl) {
+		walk->action = ACTION_AGAIN;
+		return end;
+	}
+	for (;;) {
+		pte = pgtp_ptr(p);
+		if (ops->install_pte && pgtv_kind(pgtp_get(p)) == PGT_NONE) {
+			pte_t new_pte;
+
+			err = ops->install_pte(addr, addr + PAGE_SIZE, &new_pte,
+					       walk);
+			if (err)
+				break;
+			set_pte_at(walk->mm, addr, pte, new_pte);
+			update_mmu_cache(walk->vma, addr, pte);
+		} else {
+			err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
+			if (err)
+				break;
+		}
+		/* The range may be unaligned (DAMON walks one byte) */
+		if (addr >= end - PAGE_SIZE)
+			break;
+		addr += PAGE_SIZE;
+		p = pgtp_next(p);
+	}
+	pgtp_unlock(first, ptl);
+	pw->err = err;
+	return end;
+}
+
+PGT_DEFINE_LEVEL_WALKER(pagewalk_level, pagewalk_body, struct pagewalk_pgt *);
+
+/*
+ * One table above level 0. The PMD and PUD levels take ACTION_* from their
+ * callbacks, split a huge leaf before going down and try an entry again
+ * when the table below it went away; the levels above clear a BAD entry
+ * and treat it as a hole.
+ */
+static __always_inline unsigned long
+pagewalk_body(struct pagewalk_pgt *pw, pgtp_t p, pgtp_t pp,
+	      unsigned long addr, unsigned long end, const unsigned int lvl)
+{
+	struct mm_walk *walk = pw->walk;
+	const struct mm_walk_ops *ops = walk->ops;
+	bool lower = pagewalk_has_lower(ops, lvl);
+	bool install = ops->install_pte;
+	unsigned long next, ret;
+	bool descend;
+	pgt_table_t t;
+	pgtp_t child;
+	int err = 0;
+	pgtv_t v;
+
+	if (!lvl)
+		return pagewalk_ptes(pw, p, pp, addr, end);
+
+	do {
+		next = pgtp_addr_end(p, addr, end);
+		if (pgtp_is_null(pp)) {
+			descend = true;
+			err = pagewalk_folded(walk, pgtp_ptr(p), lvl, addr, next,
+					      &descend);
+			if (err)
+				break;
+			if (!descend)
+				continue;
+		}
+again:
+		if (lvl <= 2)
+			walk->action = ACTION_SUBTREE;
+		v = pgtp_get_lockless(p);
+		if (lvl > 2 && pgtv_kind(v) == PGT_BAD) {
+			pgtp_clear_bad(p);
+			v = pgt_none_mk(lvl);
+		}
+		if (pgtv_kind(v) == PGT_NONE) {
+			if (install)
+				err = pgt_alloc_child(walk->mm, p, &v);
+			else if (ops->pte_hole)
+				err = ops->pte_hole(addr, next,
+						    real_depth(PAGEWALK_TOP - lvl),
+						    walk);
+			if (err)
+				break;
+			if (!install)
+				continue;
+		}
+
+		err = pagewalk_entry(walk, pgtp_ptr(p), lvl, addr, next);
+		if (err)
+			break;
+
+		if (lvl > 2) {
+			if (!lower && !install)
+				continue;
+		} else {
+			if (walk->action == ACTION_AGAIN)
+				goto again;
+			if (walk->action == ACTION_CONTINUE)
+				continue;
+			if (!lower) {
+				if (!install)
+					continue;
+				/* Only installing: leave a huge leaf alone */
+				v = pgtp_get_lockless(p);
+				if (pgtv_kind(v) == PGT_LEAF)
+					continue;
+			}
+			pgt_split_leaf(walk->vma, p, addr);
+		}
+
+		v = pgtp_get_lockless(p);
+		if (pgtv_kind(v) == PGT_BAD) {
+			pgtp_clear_bad(p);
+			if (lvl <= 2)
+				goto again;
+			continue;
+		}
+		if (pgtv_kind(v) != PGT_TABLE) {
+			if (lvl <= 2)
+				goto again;
+			continue;
+		}
+
+		t = pgtv_to_table(v);
+		child = pgt_table_child(t, addr);
+		ret = pagewalk_level(pw, child, p, addr, next, lvl - 1);
+		if (pw->err)
+			return ret;
+		if (lvl <= 2 && walk->action == ACTION_AGAIN)
+			goto again;
+	} while (p = pgtp_next(p), addr = next, addr != end);
+
+	pw->err = err;
+	return end;
+}
+
+static int walk_pgt_range(unsigned long addr, unsigned long end,
+			  struct mm_walk *walk)
+{
+	struct pagewalk_pgt pw = { .walk = walk };
+	pgtp_t root = pgtp_root(walk->mm, addr);
+
+	pagewalk_level(&pw, root, PGTP_NULL, addr, end, pgtp_level(root));
+	return pw.err;
 }
 
 #ifdef CONFIG_HUGETLB_PAGE
@@ -424,7 +664,7 @@ static int __walk_page_range(unsigned long start, unsigned long end,
 		if (ops->hugetlb_entry)
 			err = walk_hugetlb_range(start, end, walk);
 	} else
-		err = walk_pgd_range(start, end, walk);
+		err = walk_pgt_range(start, end, walk);
 
 	if (ops->post_vma)
 		ops->post_vma(walk);

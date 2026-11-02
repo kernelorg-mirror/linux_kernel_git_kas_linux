@@ -50,6 +50,7 @@
 #include <linux/swap.h>
 #include <linux/highmem.h>
 #include <linux/pagemap.h>
+#include <linux/pgt.h>
 #include <linux/memremap.h>
 #include <linux/kmsan.h>
 #include <linux/ksm.h>
@@ -828,6 +829,18 @@ struct page *vm_normal_page(struct vm_area_struct *vma, unsigned long addr,
 
 	return __vm_normal_page(vma, addr, pte_pfn(pte), pte_special(pte),
 				&entry, sizeof(entry), PGTABLE_LEVEL_PTE);
+}
+
+/*
+ * Split a huge leaf above level 0 into a table of smaller ones, as
+ * split_huge_pmd() and split_huge_pud() do: a no-op on anything else.
+ */
+void pgt_split_leaf(struct vm_area_struct *vma, pgtp_t p, unsigned long addr)
+{
+	if (pgtp_level(p) == 1)
+		split_huge_pmd(vma, pgtp_ptr(p), addr);
+	else if (pgtp_level(p) == 2)
+		split_huge_pud(vma, pgtp_ptr(p), addr);
 }
 
 /**

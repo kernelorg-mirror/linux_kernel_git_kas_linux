@@ -13,6 +13,7 @@
 #include <linux/mm_inline.h>
 #include <linux/mmu_notifier.h>
 #include <linux/pagemap.h>
+#include <linux/pgt_types.h>
 #include <linux/pagewalk.h>
 #include <linux/rmap.h>
 #include <linux/swap.h>
@@ -582,6 +583,8 @@ void folio_activate(struct folio *folio);
 void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
 
 void pmd_install(struct mm_struct *mm, pmd_t *pmd, pgtable_t *pte);
+
+void pgt_split_leaf(struct vm_area_struct *vma, pgtp_t p, unsigned long addr);
 
 /**
  * sync_with_folio_pmd_zap - sync with concurrent zapping of a folio PMD
