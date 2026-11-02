@@ -244,6 +244,107 @@ static __always_inline pgtval_t pgt_arch_xchg(struct mm_struct *mm,
 					      pgtval_t val, unsigned int lvl);
 #endif
 
+#ifndef pgt_arch_get_and_clear
+/**
+ * pgt_arch_get_and_clear() - Clear a leaf and return what it was.
+ * @mm: the mm.
+ * @addr: address the entry maps.
+ * @ptr: entry address.
+ * @lvl: level of the entry.
+ * @full: the whole address space is being torn down, so nothing else
+ *        uses the entry.
+ *
+ * Only the defaults of pgt_arch_get_and_clear_leaves() and
+ * pgt_arch_clear_leaves() use it.
+ *
+ * Default: pgt_arch_xchg() with the NONE value.
+ *
+ * Return: the old raw value, with every accessed and dirty bit the
+ * hardware set until it was cleared.
+ */
+static __always_inline pgtval_t pgt_arch_get_and_clear(struct mm_struct *mm,
+						       unsigned long addr,
+						       void *ptr,
+						       unsigned int lvl,
+						       bool full);
+#endif
+
+#ifndef pgt_arch_get_and_clear_leaves
+/**
+ * pgt_arch_get_and_clear_leaves() - Clear leaves and gather their state.
+ * @vma: the VMA the leaves map.
+ * @addr: address the first entry maps.
+ * @ptr: address of the first entry.
+ * @lvl: level of the entries.
+ * @nr: number of entries; above one only at level 0, where they map
+ *      consecutive pages of one folio.
+ * @full: the whole address space is being torn down, so nothing else
+ *        uses the entries.
+ *
+ * The batch is the hook so that an architecture can treat it as a whole:
+ * arm64 unfolds only the contiguous blocks a batch covers in part.
+ *
+ * Default: pgt_arch_get_and_clear() on each entry.
+ *
+ * Return: the old raw value of the first entry, dirty or young if any of
+ * the entries was.
+ */
+static __always_inline pgtval_t
+pgt_arch_get_and_clear_leaves(struct vm_area_struct *vma, unsigned long addr,
+			      void *ptr, unsigned int lvl, unsigned int nr,
+			      bool full);
+#endif
+
+#ifndef pgt_arch_clear_leaves
+/**
+ * pgt_arch_clear_leaves() - Clear leaves whose state is not needed.
+ * @vma: the VMA the leaves map.
+ * @addr: address the first entry maps.
+ * @ptr: address of the first entry.
+ * @lvl: level of the entries.
+ * @nr: number of entries; above one only at level 0, where they map
+ *      consecutive pages of one folio.
+ * @full: the whole address space is being torn down.
+ *
+ * Default: pgt_arch_get_and_clear() on each entry.
+ */
+static __always_inline void pgt_arch_clear_leaves(struct vm_area_struct *vma,
+						  unsigned long addr,
+						  void *ptr, unsigned int lvl,
+						  unsigned int nr, bool full);
+#endif
+
+#ifndef pgt_arch_clear_softleaves
+/**
+ * pgt_arch_clear_softleaves() - Clear software entries.
+ * @vma: the VMA the entries are in.
+ * @addr: address the first entry maps.
+ * @ptr: address of the first entry.
+ * @lvl: level of the entries.
+ * @nr: number of entries; above one only at level 0.
+ * @full: the whole address space is being torn down.
+ *
+ * Default: pgt_arch_clear() on each entry.
+ */
+static __always_inline void
+pgt_arch_clear_softleaves(struct vm_area_struct *vma, unsigned long addr,
+			  void *ptr, unsigned int lvl, unsigned int nr,
+			  bool full);
+#endif
+
+#ifndef pgt_arch_check_zapped
+/**
+ * pgt_arch_check_zapped() - Debug check of a leaf that was just removed.
+ * @vma: the VMA.
+ * @v: LEAF value as it was.
+ *
+ * Default: nothing. x86 warns about a shadow stack leaf outside a shadow
+ * stack VMA.
+ */
+static __always_inline void pgt_arch_check_zapped(struct vm_area_struct *vma,
+						  pgtv_t v);
+#endif
+
 #ifndef pgt_arch_invalidate
 /**
  * pgt_arch_invalidate() - Make a leaf unusable by the hardware.
@@ -710,6 +811,16 @@ static __always_inline pgtv_t pgt_arch_none_mk(unsigned int lvl);
 softleaf_t pgt_arch_to_softleaf(pgtv_t v);
 #endif
 
+#ifndef pgt_arch_softleaf_next
+/**
+ * pgt_arch_softleaf_next() - The software entry for the next swap slot.
+ * @v: SOFTLEAF value of a swap entry.
+ *
+ * Return: @v with the swap offset advanced by one and every other bit kept.
+ */
+static __always_inline pgtv_t pgt_arch_softleaf_next(pgtv_t v);
+#endif
+
 #ifndef pgt_arch_from_softleaf
 /**
  * pgt_arch_from_softleaf() - Encode a software entry.
@@ -782,6 +893,9 @@ unsigned int pgt_arch_leaf_batch(struct folio *folio, pgtp_t p, pgtv_t v,
  *
  * pgt_arch_tlb_remove_entry(tlb, p, addr) records the leaf cleared at @p
  * for the TLB flush.
+ *
+ * pgt_arch_tlb_remove_entries(tlb, p, nr, addr) does the same for @nr
+ * consecutive level-0 leaves.
  *
  * pgt_arch_tlb_remove_table(tlb, v, addr) frees, after the TLB flush, the
  * table that the TABLE value @v linked, and drops the mm's accounting for

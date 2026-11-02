@@ -34,6 +34,19 @@ pgtval_t pgt_x86_mkwrite_vma(pgtval_t val, struct vm_area_struct *vma)
 	return pgt_x86_clear_saveddirty(val | _PAGE_RW);
 }
 
+/*
+ * As arch_check_zapped_pte(): hardware without shadow stack can set
+ * Dirty=1 on a Write=0 leaf, so only with it is such a leaf outside a
+ * shadow stack VMA a software bug.
+ */
+void pgt_x86_check_zapped(struct vm_area_struct *vma, pgtv_t v)
+{
+	bool shstk = cpu_feature_enabled(X86_FEATURE_SHSTK) &&
+		     (v.val & (_PAGE_RW | _PAGE_DIRTY)) == _PAGE_DIRTY;
+
+	VM_WARN_ON_ONCE(!(vma->vm_flags & VM_SHADOW_STACK) && shstk);
+}
+
 /* Xen PV pins a table before it is linked, with an operation per level */
 static void pgt_x86_pv_alloc(struct mm_struct *mm, struct ptdesc *table,
 			     unsigned int lvl)

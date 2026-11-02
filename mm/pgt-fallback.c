@@ -82,6 +82,17 @@ pgtv_t pgt_arch_from_softleaf(softleaf_t e, unsigned int lvl)
 	}
 }
 
+/* Swap entries are batched at level 0 only */
+pgtv_t pgt_arch_softleaf_next(pgtv_t v)
+{
+	pte_t pte;
+
+	if (WARN_ON_ONCE(v.lvl))
+		return v;
+	pte = pte_next_swp_offset(__pgt_pte(v));
+	return __pgtv(pte_val(pte), 0);
+}
+
 /*
  * The legacy __pXd_alloc() helpers allocate, take the parent's lock,
  * recheck and populate or free. The address they take is only passed to

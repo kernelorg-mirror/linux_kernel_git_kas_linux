@@ -499,6 +499,109 @@ static __always_inline pgtval_t pgt_arch_xchg(struct mm_struct *mm,
 }
 #endif
 
+#ifndef pgt_arch_get_and_clear
+#define pgt_arch_get_and_clear pgt_arch_get_and_clear
+static __always_inline pgtval_t pgt_arch_get_and_clear(struct mm_struct *mm,
+						       unsigned long addr,
+						       void *ptr,
+						       unsigned int lvl,
+						       bool full)
+{
+	pgtv_t none = pgt_arch_none_mk(lvl);
+
+	return pgt_arch_xchg(mm, addr, ptr, none.val, lvl);
+}
+#endif
+
+#ifndef pgt_arch_get_and_clear_leaves
+#define pgt_arch_get_and_clear_leaves pgt_arch_get_and_clear_leaves
+static __always_inline pgtval_t
+pgt_arch_get_and_clear_leaves(struct vm_area_struct *vma, unsigned long addr,
+			      void *ptr, unsigned int lvl, unsigned int nr,
+			      bool full)
+{
+	unsigned int step = 1U << pgt_arch_entry_order(lvl);
+	struct mm_struct *mm = vma->vm_mm;
+	pgtval_t val = pgt_arch_get_and_clear(mm, addr, ptr, lvl, full);
+	pgtv_t first = __pgtv(val, lvl);
+	pgtv_t cur;
+
+	while (--nr) {
+		ptr += step;
+		addr += PAGE_SIZE;
+		val = pgt_arch_get_and_clear(mm, addr, ptr, lvl, full);
+		cur = __pgtv(val, lvl);
+		if (pgt_arch_test_flag(cur, PGT_F_DIRTY) ||
+		    pgt_arch_test_flag(cur, PGT_F_SAVED_DIRTY))
+			first = pgt_arch_mkdirty(first);
+		if (pgt_arch_test_flag(cur, PGT_F_YOUNG))
+			first = pgt_arch_set_flag(first, PGT_F_YOUNG);
+	}
+	return first.val;
+}
+#endif
+
+#ifndef pgt_arch_clear_leaves
+#define pgt_arch_clear_leaves pgt_arch_clear_leaves
+static __always_inline void pgt_arch_clear_leaves(struct vm_area_struct *vma,
+						  unsigned long addr,
+						  void *ptr, unsigned int lvl,
+						  unsigned int nr, bool full)
+{
+	unsigned int step = 1U << pgt_arch_entry_order(lvl);
+
+	for (;;) {
+		pgt_arch_get_and_clear(vma->vm_mm, addr, ptr, lvl, full);
+		if (--nr == 0)
+			break;
+		ptr += step;
+		addr += PAGE_SIZE;
+	}
+}
+#endif
+
+#ifndef pgt_arch_clear_softleaves
+#define pgt_arch_clear_softleaves pgt_arch_clear_softleaves
+static __always_inline void
+pgt_arch_clear_softleaves(struct vm_area_struct *vma, unsigned long addr,
+			  void *ptr, unsigned int lvl, unsigned int nr,
+			  bool full)
+{
+	unsigned int step = 1U << pgt_arch_entry_order(lvl);
+
+	for (;;) {
+		pgt_arch_clear(vma->vm_mm, addr, ptr, lvl);
+		if (--nr == 0)
+			break;
+		ptr += step;
+		addr += PAGE_SIZE;
+	}
+}
+#endif
+
+#ifndef pgt_arch_check_zapped
+#define pgt_arch_check_zapped pgt_arch_check_zapped
+static __always_inline void pgt_arch_check_zapped(struct vm_area_struct *vma,
+						  pgtv_t v)
+{
+}
+#endif
+
+/* The swap offset field moves by one; it may be stored inverted */
+#ifndef pgt_arch_softleaf_next
+#define pgt_arch_softleaf_next pgt_arch_softleaf_next
+static __always_inline pgtv_t pgt_arch_softleaf_next(pgtv_t v)
+{
+	pgtval_t one = (pgtval_t)1 << pgt_fmt.softleaf.offset_shift;
+
+	if (pgt_fmt.softleaf.invert_offset)
+		v.val -= one;
+	else
+		v.val += one;
+	return v;
+}
+#endif
+
 #ifndef pgt_arch_clear
 #define pgt_arch_clear pgt_arch_clear
 static __always_inline void pgt_arch_clear(struct mm_struct *mm,

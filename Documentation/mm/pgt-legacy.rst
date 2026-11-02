@@ -71,6 +71,12 @@ pgt                                              Per-level helpers
                                                  ``pudp_huge_get_and_clear()``,
                                                  ``pmdp_establish()``
 ``pgtp_invalidate()``                            ``pmdp_invalidate()``, ``pudp_invalidate()``
+``pgtp_get_and_clear_leaves()``                  ``get_and_clear_full_ptes()``,
+                                                 ``pmdp_huge_get_and_clear_full()``,
+                                                 ``pudp_huge_get_and_clear_full()``
+``pgtp_clear_leaves()``                          ``clear_full_ptes()``, PMD and PUD forms
+``pgtp_clear_softleaves()``                      ``pte_clear()``,
+                                                 ``pmdp_huge_get_and_clear_full()``
 ``pgt_alloc_child()``                            ``__pte_alloc()``, ``__pmd_alloc()``,
                                                  ``__pud_alloc()``, ``__p4d_alloc()``
 ``pgtp_clear_bad()``                             ``pmd_clear_bad()`` and kin
@@ -105,6 +111,9 @@ pgt                                              Per-level helpers
 ``pgt_leaf_size()``                              ``PAGE_SIZE``, ``HPAGE_PMD_SIZE``,
                                                  ``HPAGE_PUD_SIZE``
 ``pgt_leaf_batch()``                             ``folio_pte_batch()``
+``pgt_leaf_check_zapped()``                      ``arch_check_zapped_pte()``,
+                                                 ``arch_check_zapped_pmd()``,
+                                                 ``arch_check_zapped_pud()``
 **Software entries**
 ``pgt_softleaf_mk()``                            ``softleaf_to_pte()``, ``softleaf_to_pmd()``
 ``softleaf_from_pgt()``                          ``softleaf_from_pte()``,
@@ -114,6 +123,7 @@ pgt                                              Per-level helpers
                                                  ``pte_swp_clear_soft_dirty()``, PMD forms
 ``pgt_softleaf_uffd_wp()`` and its modifiers     ``pte_swp_uffd()``, ``pte_swp_mkuffd()``,
                                                  ``pte_swp_clear_uffd()``, PMD forms
+``pgt_softleaf_batch()``                         ``swap_pte_batch()``
 **Tables**
 ``pgt_table_mk()``                               none; ``pmd_populate()`` and kin build and
                                                  store in one step
@@ -130,6 +140,9 @@ pgt                                              Per-level helpers
 ``tlb_remove_pgt_entry()``                       ``tlb_remove_tlb_entry()``,
                                                  ``tlb_remove_pmd_tlb_entry()``,
                                                  ``tlb_remove_pud_tlb_entry()``
+``tlb_remove_pgt_entries()``                     ``tlb_remove_tlb_entries()``
+``tlb_remove_pgt_pages()``                       ``__tlb_remove_folio_pages()``,
+                                                 ``tlb_remove_page_size()``
 ``tlb_remove_pgt_table()``                       ``pte_free_tlb()``, ``pmd_free_tlb()``,
                                                  ``pud_free_tlb()``
 ===============================================  ==============================================
