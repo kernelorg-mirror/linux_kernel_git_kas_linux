@@ -2467,121 +2467,13 @@ out_unlocked:
 	return ret;
 }
 
-static inline void zap_deposited_table(struct mm_struct *mm, pmd_t *pmd)
+void zap_deposited_table(struct mm_struct *mm, pmd_t *pmd)
 {
 	pgtable_t pgtable;
 
 	pgtable = pgtable_trans_huge_withdraw(mm, pmd);
 	pte_free(mm, pgtable);
 	mm_dec_nr_ptes(mm);
-}
-
-static void zap_huge_pmd_folio(struct mm_struct *mm, struct vm_area_struct *vma,
-		pmd_t pmdval, struct folio *folio, bool is_present)
-{
-	const bool is_device_private = folio_is_device_private(folio);
-
-	/* Present and device private folios are rmappable. */
-	if (is_present || is_device_private)
-		folio_remove_rmap_pmd(folio, &folio->page, vma);
-
-	if (folio_test_anon(folio)) {
-		add_mm_counter(mm, MM_ANONPAGES, -HPAGE_PMD_NR);
-	} else {
-		add_mm_counter(mm, mm_counter_file(folio),
-			       -HPAGE_PMD_NR);
-
-		if (is_present && pmd_dirty(pmdval))
-			folio_mark_dirty(folio);
-		if (is_present && pmd_young(pmdval) &&
-		    likely(vma_has_recency(vma)))
-			folio_mark_accessed(folio);
-	}
-
-	/* Device private folios are pinned. */
-	if (is_device_private)
-		folio_put(folio);
-}
-
-static struct folio *normal_or_softleaf_folio_pmd(struct vm_area_struct *vma,
-		unsigned long addr, pmd_t pmdval, bool is_present)
-{
-	if (is_present)
-		return vm_normal_folio_pmd(vma, addr, pmdval);
-
-	if (!thp_migration_supported())
-		WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
-	return pmd_to_softleaf_folio(pmdval);
-}
-
-static bool has_deposited_pgtable(struct vm_area_struct *vma, pmd_t pmdval,
-		struct folio *folio)
-{
-	/* Some architectures require unconditional depositing. */
-	if (arch_needs_pgtable_deposit())
-		return true;
-
-	/*
-	 * Huge zero always deposited except for DAX which handles itself, see
-	 * set_huge_zero_folio().
-	 */
-	if (is_huge_zero_pmd(pmdval))
-		return !vma_is_dax(vma);
-
-	/*
-	 * Otherwise, only anonymous folios are deposited, see
-	 * __do_huge_pmd_anonymous_page().
-	 */
-	return folio && folio_test_anon(folio);
-}
-
-/**
- * zap_huge_pmd - Zap a huge THP which is of PMD size.
- * @tlb: The MMU gather TLB state associated with the operation.
- * @vma: The VMA containing the range to zap.
- * @pmd: A pointer to the leaf PMD entry.
- * @addr: The virtual address for the range to zap.
- *
- * Returns: %true on success, %false otherwise.
- */
-bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
-		 pmd_t *pmd, unsigned long addr)
-{
-	struct mm_struct *mm = tlb->mm;
-	struct folio *folio = NULL;
-	bool is_present = false;
-	bool has_deposit;
-	spinlock_t *ptl;
-	pmd_t orig_pmd;
-
-	tlb_change_page_size(tlb, HPAGE_PMD_SIZE);
-
-	ptl = __pmd_trans_huge_lock(pmd, vma);
-	if (!ptl)
-		return false;
-	/*
-	 * For architectures like ppc64 we look at deposited pgtable
-	 * when calling pmdp_huge_get_and_clear. So do the
-	 * pgtable_trans_huge_withdraw after finishing pmdp related
-	 * operations.
-	 */
-	orig_pmd = pmdp_huge_get_and_clear_full(vma, addr, pmd,
-						tlb->fullmm);
-	arch_check_zapped_pmd(vma, orig_pmd);
-	tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
-
-	is_present = pmd_present(orig_pmd);
-	folio = normal_or_softleaf_folio_pmd(vma, addr, orig_pmd, is_present);
-	has_deposit = has_deposited_pgtable(vma, orig_pmd, folio);
-	if (folio)
-		zap_huge_pmd_folio(mm, vma, orig_pmd, folio, is_present);
-	if (has_deposit)
-		zap_deposited_table(mm, pmd);
-
-	spin_unlock(ptl);
-	if (is_present && folio)
-		tlb_remove_page_size(tlb, &folio->page, HPAGE_PMD_SIZE);
-	return true;
 }
 
 #ifndef pmd_move_must_withdraw
@@ -3042,41 +2934,6 @@ spinlock_t *__pud_trans_huge_lock(pud_t *pud, struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
-int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
-		 pud_t *pud, unsigned long addr)
-{
-	spinlock_t *ptl;
-	pud_t orig_pud;
-
-	ptl = __pud_trans_huge_lock(pud, vma);
-	if (!ptl)
-		return 0;
-
-	orig_pud = pudp_huge_get_and_clear_full(vma, addr, pud, tlb->fullmm);
-	arch_check_zapped_pud(vma, orig_pud);
-	tlb_remove_pud_tlb_entry(tlb, pud, addr);
-	if (vma_is_special_huge(vma)) {
-		spin_unlock(ptl);
-		/* No zero page support yet */
-	} else {
-		struct page *page = NULL;
-		struct folio *folio;
-
-		/* No support for anonymous PUD pages or migration yet */
-		VM_WARN_ON_ONCE(vma_is_anonymous(vma) ||
-				!pud_present(orig_pud));
-
-		page = pud_page(orig_pud);
-		folio = page_folio(page);
-		folio_remove_rmap_pud(folio, page, vma);
-		add_mm_counter(tlb->mm, mm_counter_file(folio), -HPAGE_PUD_NR);
-
-		spin_unlock(ptl);
-		tlb_remove_page_size(tlb, page, HPAGE_PUD_SIZE);
-	}
-	return 1;
-}
-
 static void __split_huge_pud_locked(struct vm_area_struct *vma, pud_t *pud,
 		unsigned long haddr)
 {

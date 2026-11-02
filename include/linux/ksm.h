@@ -40,12 +40,19 @@ static inline void ksm_map_zero_page(struct mm_struct *mm)
 	atomic_long_inc(&mm->ksm_zero_pages);
 }
 
-static inline void ksm_might_unmap_zero_page(struct mm_struct *mm, pte_t pte)
+/* A KSM zero page is the zero PFN mapped dirty */
+static inline void ksm_might_unmap_zero_pfn(struct mm_struct *mm,
+					    unsigned long pfn, bool dirty)
 {
-	if (is_ksm_zero_pte(pte)) {
+	if (is_zero_pfn(pfn) && dirty) {
 		atomic_long_dec(&ksm_zero_pages);
 		atomic_long_dec(&mm->ksm_zero_pages);
 	}
+}
+
+static inline void ksm_might_unmap_zero_page(struct mm_struct *mm, pte_t pte)
+{
+	ksm_might_unmap_zero_pfn(mm, pte_pfn(pte), pte_dirty(pte));
 }
 
 static inline long mm_ksm_zero_pages(struct mm_struct *mm)
@@ -124,6 +131,11 @@ static inline int ksm_execve(struct mm_struct *mm)
 }
 
 static inline void ksm_exit(struct mm_struct *mm)
+{
+}
+
+static inline void ksm_might_unmap_zero_pfn(struct mm_struct *mm,
+					    unsigned long pfn, bool dirty)
 {
 }
 
