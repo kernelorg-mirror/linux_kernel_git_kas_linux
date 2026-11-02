@@ -8,6 +8,7 @@
 #include <linux/memfd.h>
 #include <linux/memremap.h>
 #include <linux/pagemap.h>
+#include <linux/pgt-walk.h>
 #include <linux/rmap.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
@@ -2806,79 +2807,85 @@ static bool gup_fast_folio_allowed(struct folio *folio, unsigned int flags)
 	return !reject_file_backed || shmem_mapping(mapping);
 }
 
-#ifdef CONFIG_ARCH_HAS_PTE_SPECIAL
+struct gup_fast_walk {
+	unsigned int flags;
+	/* Where the next page goes */
+	struct page **pages;
+};
+
 /*
- * GUP-fast relies on pte change detection to avoid concurrent pgtable
+ * GUP-fast relies on entry change detection to avoid concurrent page table
  * operations.
  *
  * To pin the page, GUP-fast needs to do below in order:
- * (1) pin the page (by prefetching pte), then (2) check pte not changed.
+ * (1) pin the page (by prefetching the entry), then (2) check the entry
+ * has not changed.
  *
- * For the rest of pgtable operations where pgtable updates can be racy
- * with GUP-fast, we need to do (1) clear pte, then (2) check whether page
- * is pinned.
+ * For the rest of page table operations where updates can be racy with
+ * GUP-fast, we need to do (1) clear the entry, then (2) check whether the
+ * page is pinned.
  *
- * Above will work for all pte-level operations, including THP split.
+ * Above will work for all level-0 operations, including THP split.
  *
  * For THP collapse, it's a bit more complicated because GUP-fast may be
- * walking a pgtable page that is being freed (pte is still valid but pmd
- * can be cleared already).  To avoid race in such condition, we need to
- * also check pmd here to make sure pmd doesn't change (corresponds to
- * pmdp_collapse_flush() in the THP collapse code path).
+ * walking a table that is being freed (the entry is still valid but its
+ * parent can be cleared already). To avoid race in such condition, we
+ * need to also check the parent entry here to make sure it doesn't change
+ * (corresponds to pmdp_collapse_flush() in the THP collapse code path).
  */
-static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+static __always_inline unsigned long
+gup_fast_leaves(struct gup_fast_walk *gw, pgtp_t p, pgtp_t pp, pgtv_t parent,
+		unsigned long addr, unsigned long end)
 {
-	int ret = 0;
-	pte_t *ptep, *ptem;
+	struct page **pages = gw->pages;
+	unsigned int flags = gw->flags;
+	pgtp_t first = p;
 
-	ptem = ptep = pte_offset_map(&pmd, addr);
-	if (!ptep)
-		return 0;
+	/* Interrupts are off: the table cannot be freed under us */
+	if (!pgtp_map(p, PGTP_NULL))
+		return addr;
 	do {
-		pte_t pte = ptep_get_lockless(ptep);
-		struct page *page;
+		pgtv_t v = pgtp_get_lockless(p);
 		struct folio *folio;
+		struct page *page;
+		pgt_leaf_t l;
 
 		/*
-		 * Always fallback to ordinary GUP on PROT_NONE-mapped pages:
-		 * pte_access_permitted() better should reject these pages
-		 * either way: otherwise, GUP-fast might succeed in
-		 * cases where ordinary GUP would fail due to VMA access
-		 * permissions.
+		 * Always fall back to ordinary GUP on PROT_NONE-mapped pages:
+		 * pgt_leaf_accessible() rejects them. Otherwise, GUP-fast
+		 * might succeed in cases where ordinary GUP would fail due
+		 * to VMA access permissions.
 		 */
-		if (pte_protnone(pte))
-			goto pte_unmap;
+		if (pgtv_kind(v) != PGT_LEAF)
+			break;
+		l = pgtv_to_leaf(v);
+		if (!pgt_leaf_accessible(l, flags & FOLL_WRITE))
+			break;
+		if (pgt_leaf_special(l))
+			break;
 
-		if (!pte_access_permitted(pte, flags & FOLL_WRITE))
-			goto pte_unmap;
-
-		if (pte_special(pte))
-			goto pte_unmap;
-
-		/* If it's not marked as special it must have a valid memmap. */
-		VM_WARN_ON_ONCE(!pfn_valid(pte_pfn(pte)));
-		page = pte_page(pte);
+		/* If it's not marked as special it must have a valid memmap */
+		VM_WARN_ON_ONCE(!pfn_valid(pgt_leaf_pfn(l)));
+		page = pfn_to_page(pgt_leaf_pfn(l));
 
 		folio = try_grab_folio_fast(page, 1, flags);
 		if (!folio)
-			goto pte_unmap;
+			break;
 
-		if (unlikely(pmd_val(pmd) != pmd_val(pmdp_get_lockless(pmdp))) ||
-		    unlikely(pte_val(pte) != pte_val(ptep_get_lockless(ptep)))) {
+		if (unlikely(!pgtv_same(parent, pgtp_get_lockless(pp))) ||
+		    unlikely(!pgtv_same(v, pgtp_get_lockless(p)))) {
 			gup_put_folio(folio, 1, flags);
-			goto pte_unmap;
+			break;
 		}
 
 		if (!gup_fast_folio_allowed(folio, flags)) {
 			gup_put_folio(folio, 1, flags);
-			goto pte_unmap;
+			break;
 		}
 
-		if (!pte_write(pte) && gup_must_unshare(NULL, flags, page)) {
+		if (!pgt_leaf_write(l) && gup_must_unshare(NULL, flags, page)) {
 			gup_put_folio(folio, 1, flags);
-			goto pte_unmap;
+			break;
 		}
 
 		/*
@@ -2889,227 +2896,128 @@ static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
 		 */
 		if ((flags & FOLL_PIN) && arch_make_folio_accessible(folio)) {
 			gup_put_folio(folio, 1, flags);
-			goto pte_unmap;
+			break;
 		}
 		folio_set_referenced(folio);
-		pages[*nr] = page;
-		(*nr)++;
-	} while (ptep++, addr += PAGE_SIZE, addr != end);
+		*pages++ = page;
+		p = pgtp_next(p);
+		addr += PAGE_SIZE;
+	} while (addr != end);
 
-	ret = 1;
-
-pte_unmap:
-	pte_unmap(ptem);
-	return ret;
+	pgtp_unmap(first);
+	gw->pages = pages;
+	return addr;
 }
-#else
+
+/* A leaf above level 0: grab the pages of [addr, end) in one go */
+static __always_inline bool gup_fast_leaf(struct gup_fast_walk *gw, pgtp_t p,
+					  pgtv_t v, unsigned long addr,
+					  unsigned long end)
+{
+	unsigned int flags = gw->flags;
+	pgt_leaf_t l = pgtv_to_leaf(v);
+	unsigned long offset = addr & (pgtp_size(p) - 1);
+	struct page **pages = gw->pages;
+	struct folio *folio;
+	struct page *page;
+	int refs;
+
+	if (!pgt_leaf_accessible(l, flags & FOLL_WRITE))
+		return false;
+
+	if (pgt_leaf_special(l))
+		return false;
+
+	refs = (end - addr) >> PAGE_SHIFT;
+	page = pfn_to_page(pgt_leaf_pfn(l)) + (offset >> PAGE_SHIFT);
+
+	folio = try_grab_folio_fast(page, refs, flags);
+	if (!folio)
+		return false;
+
+	if (unlikely(!pgtv_same(v, pgtp_get_lockless(p)))) {
+		gup_put_folio(folio, refs, flags);
+		return false;
+	}
+
+	if (!gup_fast_folio_allowed(folio, flags)) {
+		gup_put_folio(folio, refs, flags);
+		return false;
+	}
+
+	if (!pgt_leaf_write(l) && gup_must_unshare(NULL, flags, &folio->page)) {
+		gup_put_folio(folio, refs, flags);
+		return false;
+	}
+
+	for (; refs; refs--)
+		*(pages++) = page++;
+	gw->pages = pages;
+	folio_set_referenced(folio);
+	return true;
+}
+
+PGT_DEFINE_LEVEL_WALKER(gup_fast_level, gup_fast_body, struct gup_fast_walk *);
 
 /*
- * If we can't determine whether or not a pte is special, then fail immediately
- * for ptes. Note, we can still pin HugeTLB and THP as these are guaranteed not
- * to be special.
- *
- * For a futex to be placed on a THP tail page, get_futex_key requires a
- * get_user_pages_fast_only implementation that can pin pages. Thus it's still
- * useful to have gup_fast_pmd_leaf even if we can't operate on ptes.
+ * One table above level 0. Anything but a table or a leaf ends the walk,
+ * and so does a leaf that cannot be grabbed: the slow path takes over from
+ * the address reached.
  */
-static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+static __always_inline unsigned long
+gup_fast_body(struct gup_fast_walk *gw, pgtp_t p, pgtp_t pp,
+	      unsigned long addr, unsigned long end, const unsigned int lvl)
 {
-	return 0;
-}
-#endif /* CONFIG_ARCH_HAS_PTE_SPECIAL */
+	unsigned long next, ret;
+	pgtp_t child;
+	pgtv_t v;
 
-static int gup_fast_pmd_leaf(pmd_t orig, pmd_t *pmdp, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
-{
-	struct page *page;
-	struct folio *folio;
-	int refs;
+	/* Level 0 is walked by gup_fast_leaves(), with the parent's snapshot */
+	if (!lvl)
+		return addr;
 
-	if (!pmd_access_permitted(orig, flags & FOLL_WRITE))
-		return 0;
-
-	if (pmd_special(orig))
-		return 0;
-
-	refs = (end - addr) >> PAGE_SHIFT;
-	page = pmd_page(orig) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
-
-	folio = try_grab_folio_fast(page, refs, flags);
-	if (!folio)
-		return 0;
-
-	if (unlikely(pmd_val(orig) != pmd_val(pmdp_get_lockless(pmdp)))) {
-		gup_put_folio(folio, refs, flags);
-		return 0;
-	}
-
-	if (!gup_fast_folio_allowed(folio, flags)) {
-		gup_put_folio(folio, refs, flags);
-		return 0;
-	}
-	if (!pmd_write(orig) && gup_must_unshare(NULL, flags, &folio->page)) {
-		gup_put_folio(folio, refs, flags);
-		return 0;
-	}
-
-	pages += *nr;
-	*nr += refs;
-	for (; refs; refs--)
-		*(pages++) = page++;
-	folio_set_referenced(folio);
-	return 1;
-}
-
-static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
-{
-	struct page *page;
-	struct folio *folio;
-	int refs;
-
-	if (!pud_access_permitted(orig, flags & FOLL_WRITE))
-		return 0;
-
-	if (pud_special(orig))
-		return 0;
-
-	refs = (end - addr) >> PAGE_SHIFT;
-	page = pud_page(orig) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
-
-	folio = try_grab_folio_fast(page, refs, flags);
-	if (!folio)
-		return 0;
-
-	if (unlikely(pud_val(orig) != pud_val(pudp_get(pudp)))) {
-		gup_put_folio(folio, refs, flags);
-		return 0;
-	}
-
-	if (!gup_fast_folio_allowed(folio, flags)) {
-		gup_put_folio(folio, refs, flags);
-		return 0;
-	}
-
-	if (!pud_write(orig) && gup_must_unshare(NULL, flags, &folio->page)) {
-		gup_put_folio(folio, refs, flags);
-		return 0;
-	}
-
-	pages += *nr;
-	*nr += refs;
-	for (; refs; refs--)
-		*(pages++) = page++;
-	folio_set_referenced(folio);
-	return 1;
-}
-
-static int gup_fast_pmd_range(pud_t *pudp, pud_t pud, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
-{
-	unsigned long next;
-	pmd_t *pmdp;
-
-	pmdp = pmd_offset_lockless(pudp, pud, addr);
 	do {
-		pmd_t pmd = pmdp_get_lockless(pmdp);
+		v = pgtp_get_lockless(p);
+		next = pgtp_addr_end(p, addr, end);
+		if (pgtv_kind(v) == PGT_LEAF) {
+			if (!gup_fast_leaf(gw, p, v, addr, next))
+				return addr;
+			continue;
+		}
+		if (pgtv_kind(v) != PGT_TABLE)
+			return addr;
+		/*
+		 * Without pte_special() a level-0 leaf cannot be checked; huge
+		 * leaves are never special and are still grabbed.
+		 */
+		if (lvl == 1 && !IS_ENABLED(CONFIG_ARCH_HAS_PTE_SPECIAL))
+			return addr;
+		child = pgt_table_child(pgtv_to_table(v), addr);
+		if (lvl == 1)
+			ret = gup_fast_leaves(gw, child, p, v, addr, next);
+		else
+			ret = gup_fast_level(gw, child, p, addr, next, lvl - 1);
+		if (ret != next)
+			return ret;
+	} while (p = pgtp_next(p), addr = next, addr != end);
 
-		next = pmd_addr_end(addr, end);
-		if (!pmd_present(pmd))
-			return 0;
-
-		if (unlikely(pmd_leaf(pmd))) {
-			/* See gup_fast_pte_range() */
-			if (pmd_protnone(pmd))
-				return 0;
-
-			if (!gup_fast_pmd_leaf(pmd, pmdp, addr, next, flags,
-				pages, nr))
-				return 0;
-
-		} else if (!gup_fast_pte_range(pmd, pmdp, addr, next, flags,
-					       pages, nr))
-			return 0;
-	} while (pmdp++, addr = next, addr != end);
-
-	return 1;
+	return end;
 }
 
-static int gup_fast_pud_range(p4d_t *p4dp, p4d_t p4d, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
-{
-	unsigned long next;
-	pud_t *pudp;
-
-	pudp = pud_offset_lockless(p4dp, p4d, addr);
-	do {
-		pud_t pud = pudp_get(pudp);
-
-		next = pud_addr_end(addr, end);
-		if (unlikely(!pud_present(pud)))
-			return 0;
-		if (unlikely(pud_leaf(pud))) {
-			if (!gup_fast_pud_leaf(pud, pudp, addr, next, flags,
-					       pages, nr))
-				return 0;
-		} else if (!gup_fast_pmd_range(pudp, pud, addr, next, flags,
-					       pages, nr))
-			return 0;
-	} while (pudp++, addr = next, addr != end);
-
-	return 1;
-}
-
-static int gup_fast_p4d_range(pgd_t *pgdp, pgd_t pgd, unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
-{
-	unsigned long next;
-	p4d_t *p4dp;
-
-	p4dp = p4d_offset_lockless(pgdp, pgd, addr);
-	do {
-		p4d_t p4d = p4dp_get(p4dp);
-
-		next = p4d_addr_end(addr, end);
-		if (!p4d_present(p4d))
-			return 0;
-		BUILD_BUG_ON(p4d_leaf(p4d));
-		if (!gup_fast_pud_range(p4dp, p4d, addr, next, flags,
-					pages, nr))
-			return 0;
-	} while (p4dp++, addr = next, addr != end);
-
-	return 1;
-}
-
-static void gup_fast_pgd_range(unsigned long addr, unsigned long end,
+static void gup_fast_pgt_range(unsigned long addr, unsigned long end,
 		unsigned int flags, struct page **pages, int *nr)
 {
-	unsigned long next;
-	pgd_t *pgdp;
+	struct gup_fast_walk gw = {
+		.flags = flags,
+		.pages = pages + *nr,
+	};
+	pgtp_t root = pgtp_root(current->mm, addr);
 
-	pgdp = pgd_offset(current->mm, addr);
-	do {
-		pgd_t pgd = pgdp_get(pgdp);
-
-		next = pgd_addr_end(addr, end);
-		if (pgd_none(pgd))
-			return;
-		BUILD_BUG_ON(pgd_leaf(pgd));
-		if (!gup_fast_p4d_range(pgdp, pgd, addr, next, flags,
-					pages, nr))
-			return;
-	} while (pgdp++, addr = next, addr != end);
+	gup_fast_level(&gw, root, PGTP_NULL, addr, end, pgtp_level(root));
+	*nr = gw.pages - pages;
 }
 #else
-static inline void gup_fast_pgd_range(unsigned long addr, unsigned long end,
+static inline void gup_fast_pgt_range(unsigned long addr, unsigned long end,
 		unsigned int flags, struct page **pages, int *nr)
 {
 }
@@ -3154,7 +3062,7 @@ static unsigned long gup_fast(unsigned long start, unsigned long end,
 	 * that come from callers of tlb_remove_table_sync_one().
 	 */
 	local_irq_save(flags);
-	gup_fast_pgd_range(start, end, gup_flags, pages, &nr_pinned);
+	gup_fast_pgt_range(start, end, gup_flags, pages, &nr_pinned);
 	local_irq_restore(flags);
 
 	/*
