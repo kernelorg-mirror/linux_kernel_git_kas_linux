@@ -3800,25 +3800,7 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
 		 * The flag is not transferred to new_flags as it is
 		 * folio specific, so it is not lost.
 		 */
-		new_flags.f |= data_race(folio->flags.f) &
-				((1L << PG_referenced) |
-				 (1L << PG_swapbacked) |
-				 (1L << PG_swapcache) |
-				 (1L << PG_mlocked) |
-				 (1L << PG_uptodate) |
-				 (1L << PG_active) |
-				 (1L << PG_workingset) |
-				 (1L << PG_locked) |
-				 (1L << PG_unevictable) |
-#ifdef CONFIG_ARCH_USES_PG_ARCH_2
-				 (1L << PG_arch_2) |
-#endif
-#ifdef CONFIG_ARCH_USES_PG_ARCH_3
-				 (1L << PG_arch_3) |
-#endif
-				 (1L << PG_dirty) |
-				 (1L << PG_dropbehind) |
-				 LRU_GEN_MASK | LRU_REFS_MASK);
+		new_flags.f |= data_race(folio->flags.f) & FOLIO_SPLIT_FLAGS;
 
 		/*
 		 * Set PG_head before smp_wmb() and clear_compound_head().

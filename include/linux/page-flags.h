@@ -1169,6 +1169,18 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 #define __PG_MLOCKED		0
 #endif
 
+#ifdef CONFIG_ARCH_USES_PG_ARCH_2
+#define __PG_ARCH_2		BIT(PG_arch_2)
+#else
+#define __PG_ARCH_2		0
+#endif
+
+#ifdef CONFIG_ARCH_USES_PG_ARCH_3
+#define __PG_ARCH_3		BIT(PG_arch_3)
+#else
+#define __PG_ARCH_3		0
+#endif
+
 /*
  * Flags checked when a page is freed.  Pages being freed should not have
  * these flags set.  If they are, there is a problem.
@@ -1190,6 +1202,16 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
  */
 #define PAGE_FLAGS_CHECK_AT_PREP	\
 	((PAGEFLAGS_MASK & ~__PG_HWPOISON) | LRU_GEN_MASK | LRU_REFS_MASK)
+
+/*
+ * Flags a split copies from the folio to each new folio.
+ */
+#define FOLIO_SPLIT_FLAGS						\
+	(BIT(PG_referenced) | BIT(PG_swapbacked) | BIT(PG_swapcache) |	\
+	 __PG_MLOCKED | BIT(PG_uptodate) | BIT(PG_active) |		\
+	 BIT(PG_workingset) | BIT(PG_locked) | BIT(PG_unevictable) |	\
+	 __PG_ARCH_2 | __PG_ARCH_3 | BIT(PG_dirty) |			\
+	 BIT(PG_dropbehind) | LRU_GEN_MASK | LRU_REFS_MASK)
 
 /*
  * Flags stored in the second page of a compound page.  They may overlap
