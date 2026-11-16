@@ -231,7 +231,7 @@ static inline bool page_range_contiguous(const struct page *page,
 #define PG_ALIGN_DOWN(addr)	ALIGN_DOWN(addr, PG_SIZE)
 #define PG_ALIGNED(addr)	IS_ALIGNED((unsigned long)(addr), PG_SIZE)
 
-#if PTE_SIZE == PG_SIZE
+#if PTE_SIZE == PG_SIZE || defined(CONFIG_PAGE_DEFS_RELAXED)
 #define PAGE_ALIGN		PG_ALIGN
 #define PAGE_ALIGN_DOWN		PG_ALIGN_DOWN
 #define PAGE_ALIGNED		PG_ALIGNED
@@ -2277,7 +2277,7 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 
 #define offset_in_pte(p)	((unsigned long)(p) & ~PTE_MASK)
 #define offset_in_pg(p)		((unsigned long)(p) & ~PG_MASK)
-#if PTE_SIZE == PG_SIZE
+#if PTE_SIZE == PG_SIZE || defined(CONFIG_PAGE_DEFS_RELAXED)
 #define offset_in_page(p)	((unsigned long)(p) & ~PAGE_MASK)
 #endif
 #define offset_in_folio(folio, p) ((unsigned long)(p) & (folio_size(folio) - 1))

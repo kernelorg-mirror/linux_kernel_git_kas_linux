@@ -44,11 +44,13 @@
  * PAGE_SHIFT/SIZE/MASK have double meaning. They can be used for both
  * MMU page size and for order-0 buddy allocations.
  *
- * Only define them if sizes are the same.
+ * Define them as aliases of PG_* either when the two sizes match, or
+ * when CONFIG_PAGE_DEFS_RELAXED is set so unaudited code keeps building
+ * with PG_SIZE != PTE_SIZE.
  *
  * To be removed once transition is complete.
  */
-#if PTE_SHIFT == PG_SHIFT
+#if PTE_SHIFT == PG_SHIFT || defined(CONFIG_PAGE_DEFS_RELAXED)
 #define PAGE_SHIFT	PG_SHIFT
 #define PAGE_SIZE	PG_SIZE
 #define PAGE_MASK	PG_MASK

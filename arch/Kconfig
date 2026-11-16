@@ -1395,6 +1395,29 @@ config PG_SHIFT
 	default 18 if PG_SIZE_256KB
 	default PTE_SHIFT
 
+config PAGE_DEFS_RELAXED
+	bool "Define PAGE_SIZE/SHIFT/MASK as aliases for PG_SIZE/SHIFT/MASK"
+	default y
+	help
+	  When PG_SIZE != PTE_SIZE the legacy PAGE_SIZE/PAGE_SHIFT/PAGE_MASK
+	  identifiers (and PAGE_ALIGN, PAGE_ALIGN_DOWN, PAGE_ALIGNED and
+	  offset_in_page()) are ambiguous: most existing call sites mean
+	  "order-0 allocation size" (PG_*), but a few mean "MMU PTE
+	  granularity" (PTE_*).
+
+	  Say Y to define those identifiers as aliases for the PG_*
+	  equivalents so unaudited code keeps building when PG_SIZE differs
+	  from PTE_SIZE.
+
+	  Say N to leave them undefined when PG_SIZE != PTE_SIZE, forcing
+	  every reference to be made explicit (PG_* or PTE_*). This is
+	  useful when auditing the tree for unconverted call sites.
+
+	  When PG_SIZE == PTE_SIZE the option has no effect: PAGE_* is
+	  always defined.
+
+	  If unsure, say Y.
+
 # This allows to use a set of generic functions to determine mmap base
 # address by giving priority to top-down scheme only if the process
 # is not in legacy mode (compat task, unlimited stack size or
