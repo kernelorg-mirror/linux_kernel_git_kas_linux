@@ -579,7 +579,7 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
 				unsigned int stride,
 				bool strict)
 {
-	int nr_scanned = 0, total_isolated = 0;
+	int nr_scanned = 0, nr_probes = 0, total_isolated = 0;
 	struct page *page;
 	unsigned long flags = 0;
 	bool locked = false;
@@ -599,13 +599,15 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
 		/*
 		 * Periodically drop the lock (if held) regardless of its
 		 * contention, to give chance to IRQs. Abort if fatal signal
-		 * pending.
+		 * pending. Count probes rather than pfns, as the scan does not
+		 * always land on a multiple of COMPACT_CLUSTER_MAX.
 		 */
-		if (!(blockpfn % COMPACT_CLUSTER_MAX)
-		    && compact_unlock_should_abort(&cc->zone->lock, flags,
-								&locked, cc))
+		if (!(nr_probes % COMPACT_CLUSTER_MAX) &&
+		    compact_unlock_should_abort(&cc->zone->lock, flags,
+						&locked, cc))
 			break;
 
+		nr_probes++;
 		nr_scanned++;
 
 		/*
