@@ -946,7 +946,7 @@ static void arm64_send_ipi(const cpumask_t *mask, unsigned int nr)
 			__ipi_send_single(get_ipi_desc(cpu, nr), cpu);
 }
 
-static void arm64_backtrace_ipi(cpumask_t *mask)
+void arm64_backtrace_ipi(cpumask_t *mask)
 {
 	arm64_send_ipi(mask, IPI_CPU_BACKTRACE);
 }

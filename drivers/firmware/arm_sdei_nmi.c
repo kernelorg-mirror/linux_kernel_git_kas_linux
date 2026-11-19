@@ -124,7 +124,7 @@ static int sdei_nmi_handler(u32 event, struct pt_regs *regs, void *arg)
 }
 NOKPROBE_SYMBOL(sdei_nmi_handler);
 
-static void sdei_nmi_fire(unsigned int target_cpu)
+static int sdei_nmi_fire(unsigned int target_cpu)
 {
 	int err = sdei_event_signal(SDEI_NMI_EVENT, target_cpu);
 
@@ -133,7 +133,12 @@ static void sdei_nmi_fire(unsigned int target_cpu)
 		pr_warn("SDEI_EVENT_SIGNAL to CPU %u failed: %d\n",
 			target_cpu, err);
 	}
+
+	return err;
 }
+
+/* CPUs to IPI instead; nmi_trigger_cpumask_backtrace() serialises its users */
+static cpumask_t sdei_nmi_ipi_mask;
 
 /*
  * Raise callback for nmi_trigger_cpumask_backtrace(): signal event 0
@@ -151,8 +156,18 @@ static void sdei_nmi_raise_backtrace(cpumask_t *mask)
 	 */
 	dsb(ishst);
 
-	for_each_cpu(cpu, mask)
-		sdei_nmi_fire(cpu);
+	cpumask_clear(&sdei_nmi_ipi_mask);
+	for_each_cpu(cpu, mask) {
+		if (sdei_nmi_fire(cpu) == -EAGAIN)
+			cpumask_set_cpu(cpu, &sdei_nmi_ipi_mask);
+	}
+
+	/*
+	 * A CPU with SDEI masked is in a power-down idle state or going
+	 * offline. The IPI wakes it and it reports like any other.
+	 */
+	if (!cpumask_empty(&sdei_nmi_ipi_mask))
+		arm64_backtrace_ipi(&sdei_nmi_ipi_mask);
 }
 
 /*

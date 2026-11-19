@@ -45,4 +45,11 @@ static inline void sdei_nmi_stop_cpus(const cpumask_t *mask) { }
  */
 void __noreturn arm64_nmi_cpu_stop(struct pt_regs *regs, bool die_on_crash);
 
+/*
+ * Send the regular backtrace IPI (an NMI with pseudo-NMI) to @mask. The
+ * SDEI provider uses it for the CPUs it cannot signal. Defined in
+ * arch/arm64/kernel/smp.c.
+ */
+void arm64_backtrace_ipi(cpumask_t *mask);
+
 #endif /* __ASM_NMI_H */
