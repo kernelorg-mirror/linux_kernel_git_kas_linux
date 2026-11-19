@@ -12,6 +12,7 @@
 #include <linux/cpuhotplug.h>
 #include <linux/cpu.h>
 #include <linux/cpu_pm.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/hardirq.h>
 #include <linux/kernel.h>
@@ -31,6 +32,8 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
+
+#include <asm/smp_plat.h>
 
 /*
  * The call to use to reach the firmware.
@@ -299,9 +302,77 @@ static int sdei_api_get_version(u64 *version)
 	return invoke_sdei_fn(SDEI_1_0_FN_SDEI_VERSION, 0, 0, 0, 0, 0, version);
 }
 
+/*
+ * Event 0 must not reach a PE that has SDEI masked. Firmware may
+ * acknowledge the SGI behind it and never end it, and the PE then takes
+ * no Non-secure interrupt at all.
+ *
+ * A sender signals a PE only with the PE's lock held, and only if the PE
+ * is unmasked. The PE takes its lock to mark itself masked: no sender gets
+ * through after that, and a sender that got through before has counted
+ * its signal in @raised and raised it. The PE lets its signals arrive
+ * before it masks: each event 0 takes one off @raised. @pm_masked records
+ * what the cpu_pm notifier masked.
+ */
+struct sdei_pe {
+	raw_spinlock_t	lock;
+	atomic_t	raised;
+	bool		unmasked;
+	bool		pm_masked;
+};
+
+static DEFINE_PER_CPU(struct sdei_pe, sdei_pe) = {
+	.lock = __RAW_SPIN_LOCK_UNLOCKED(sdei_pe.lock),
+};
+
+/* Wait for event 0 signals in flight to this PE to arrive */
+static void sdei_wait_in_flight(struct sdei_pe *pe)
+{
+	int i;
+
+	/* Bounded: a signal that never arrives must not hold up masking */
+	for (i = 0; i < USEC_PER_MSEC && atomic_read(&pe->raised) > 0; i++)
+		udelay(1);
+
+	if (atomic_read(&pe->raised) > 0) {
+		pr_warn_once("event 0 to CPU[%u] did not arrive within 1ms\n",
+			     smp_processor_id());
+	}
+
+	/*
+	 * A signal raised while an earlier one is still pending merges into
+	 * it, and the count stays high with nothing on its way: drop it. A
+	 * signal that arrives after this finds the count at zero and leaves it.
+	 */
+	atomic_set(&pe->raised, 0);
+}
+
+/* Stop event 0 signals to this PE, waiting for the senders under the lock */
+static void sdei_block_signal(void)
+{
+	struct sdei_pe *pe = this_cpu_ptr(&sdei_pe);
+	unsigned long flags;
+
+	/*
+	 * A panic from an SDEI event or a pseudo-NMI may have left the lock
+	 * held by this CPU. The CPUs that could signal it are stopped by now.
+	 */
+	if (panic_on_this_cpu()) {
+		WRITE_ONCE(pe->unmasked, false);
+	} else {
+		raw_spin_lock_irqsave(&pe->lock, flags);
+		WRITE_ONCE(pe->unmasked, false);
+		raw_spin_unlock_irqrestore(&pe->lock, flags);
+	}
+
+	sdei_wait_in_flight(pe);
+}
+
 int sdei_mask_local_cpu(void)
 {
 	int err;
+
+	sdei_block_signal();
 
 	err = invoke_sdei_fn(SDEI_1_0_FN_SDEI_PE_MASK, 0, 0, 0, 0, 0, NULL);
 	if (err && err != -EIO) {
@@ -330,6 +401,8 @@ int sdei_unmask_local_cpu(void)
 		return err;
 	}
 
+	/* No lock: a sender that misses this only refuses an unmasked PE */
+	WRITE_ONCE(this_cpu_ptr(&sdei_pe)->unmasked, true);
 	return 0;
 }
 
@@ -340,14 +413,34 @@ static void _ipi_unmask_cpu(void *ignored)
 }
 
 /*
- * Signal the software-signalled event (event 0) to @mpidr. Does nothing
- * but the SMC -- no locks, no event lookup -- so it is safe from NMI /
- * crash context (e.g. the cross-CPU NMI service).
+ * Signal the software-signalled event (event 0) to @cpu. It waits for no
+ * lock and looks up no event, so it is safe from NMI / crash context (e.g.
+ * the cross-CPU NMI service).
+ *
+ * Returns -EAGAIN without signalling if @cpu has SDEI masked or is masking.
  */
-int sdei_event_signal(u32 event_num, u64 mpidr)
+int sdei_event_signal(u32 event_num, unsigned int cpu)
 {
-	return invoke_sdei_fn(SDEI_1_0_FN_SDEI_EVENT_SIGNAL, event_num,
-			      mpidr, 0, 0, 0, NULL);
+	struct sdei_pe *pe = per_cpu_ptr(&sdei_pe, cpu);
+	u64 mpidr = cpu_logical_map(cpu);
+	unsigned long flags;
+	int err = -EAGAIN;
+
+	/* IRQs off: the PE may be waiting for the lock to mask */
+	if (!raw_spin_trylock_irqsave(&pe->lock, flags))
+		return -EAGAIN;
+
+	if (READ_ONCE(pe->unmasked)) {
+		atomic_inc(&pe->raised);
+		err = invoke_sdei_fn(SDEI_1_0_FN_SDEI_EVENT_SIGNAL, event_num,
+				     mpidr, 0, 0, 0, NULL);
+		/* A late signal may have taken this count already */
+		if (err)
+			atomic_dec_if_positive(&pe->raised);
+	}
+
+	raw_spin_unlock_irqrestore(&pe->lock, flags);
+	return err;
 }
 NOKPROBE_SYMBOL(sdei_event_signal);
 
@@ -680,6 +773,9 @@ static int sdei_cpuhp_down(unsigned int cpu)
 	struct sdei_event *event;
 	int err;
 
+	/* A signal must arrive while event 0 is still registered here */
+	sdei_block_signal();
+
 	/* un-register private events */
 	spin_lock(&sdei_list_lock);
 	list_for_each_entry(event, &sdei_list, list) {
@@ -733,16 +829,30 @@ static int sdei_cpuhp_up(unsigned int cpu)
 static int sdei_pm_notifier(struct notifier_block *nb, unsigned long action,
 			    void *data)
 {
+	struct sdei_pe *pe = this_cpu_ptr(&sdei_pe);
 	int rv;
 
 	WARN_ON_ONCE(preemptible());
 
 	switch (action) {
 	case CPU_PM_ENTER:
+		/*
+		 * Leave alone a PE that is masked already: before
+		 * sdei_cpuhp_up(), or after sdei_cpuhp_down(), as cpuidle runs
+		 * until CPU_OFF. CPU_PM_EXIT must not unmask it.
+		 */
+		if (!pe->unmasked)
+			return NOTIFY_DONE;
 		rv = sdei_mask_local_cpu();
+		if (!rv)
+			pe->pm_masked = true;
 		break;
 	case CPU_PM_EXIT:
 	case CPU_PM_ENTER_FAILED:
+		/* Unmask only what CPU_PM_ENTER masked */
+		if (!pe->pm_masked)
+			return NOTIFY_DONE;
+		pe->pm_masked = false;
 		rv = sdei_unmask_local_cpu();
 		break;
 	default:
@@ -1113,6 +1223,14 @@ int sdei_event_handler(struct pt_regs *regs,
 {
 	int err;
 	u32 event_num = arg->event_num;
+
+	/*
+	 * One signal raised at this PE has arrived. If the PE gave up waiting
+	 * for it and dropped the count, leave the count at zero: below zero,
+	 * the PE would not wait for the next signal raised here.
+	 */
+	if (!event_num)
+		atomic_dec_if_positive(&this_cpu_ptr(&sdei_pe)->raised);
 
 	err = arg->callback(event_num, regs, arg->callback_arg);
 	if (err)

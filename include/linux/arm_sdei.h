@@ -39,9 +39,9 @@ int sdei_event_disable(u32 event_num);
 
 /*
  * Signal the software-signalled event (event 0) to another PE, NMI-like.
- * @mpidr is the target's MPIDR affinity.
+ * Returns -EAGAIN if @cpu has SDEI masked.
  */
-int sdei_event_signal(u32 event_num, u64 mpidr);
+int sdei_event_signal(u32 event_num, unsigned int cpu);
 
 /* Was SDEI firmware probed and usable? */
 bool sdei_is_present(void);

@@ -36,7 +36,7 @@
  *
  * Delivery uses the standard SDEI software-signalled event (event 0) and
  * SDEI_EVENT_SIGNAL. We register a handler for event 0, enable it, and
- * poke a target CPU with sdei_event_signal(0, mpidr): firmware makes
+ * poke a target CPU with sdei_event_signal(0, cpu): firmware makes
  * event 0 pending on that PE and dispatches the handler NMI-like,
  * regardless of the target's DAIF.
  * Availability is simply whether event 0 registers and enables -- if SDEI
@@ -58,7 +58,6 @@
 #include <linux/types.h>
 
 #include <asm/nmi.h>
-#include <asm/smp_plat.h>
 
 static bool sdei_nmi_available;
 
@@ -127,11 +126,13 @@ NOKPROBE_SYMBOL(sdei_nmi_handler);
 
 static void sdei_nmi_fire(unsigned int target_cpu)
 {
-	int err = sdei_event_signal(SDEI_NMI_EVENT, cpu_logical_map(target_cpu));
+	int err = sdei_event_signal(SDEI_NMI_EVENT, target_cpu);
 
-	if (err)
+	/* -EAGAIN: the CPU has SDEI masked and is not signalled */
+	if (err && err != -EAGAIN) {
 		pr_warn("SDEI_EVENT_SIGNAL to CPU %u failed: %d\n",
 			target_cpu, err);
+	}
 }
 
 /*
