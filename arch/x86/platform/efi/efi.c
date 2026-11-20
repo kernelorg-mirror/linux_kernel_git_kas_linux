@@ -150,6 +150,12 @@ static void __init do_add_efi_memmap(void)
 		case EFI_PERSISTENT_MEMORY:
 			e820_type = E820_TYPE_PMEM;
 			break;
+		case EFI_UNACCEPTED_MEMORY:
+			if (IS_ENABLED(CONFIG_UNACCEPTED_MEMORY))
+				e820_type = E820_TYPE_RAM;
+			else
+				e820_type = E820_TYPE_RESERVED;
+			break;
 		default:
 			/*
 			 * EFI_RESERVED_TYPE EFI_RUNTIME_SERVICES_CODE
